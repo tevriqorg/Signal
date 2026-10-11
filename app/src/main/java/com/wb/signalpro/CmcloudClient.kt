@@ -9,6 +9,7 @@ import java.io.File
 import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.security.MessageDigest
 import kotlin.math.max
 
@@ -37,7 +38,8 @@ class CmcloudClient(private val baseUrl: String) {
         val sha256: String,
         val cached: Boolean,
         val name: String = "",
-        val mediaType: String = ""
+        val mediaType: String = "",
+        val eosHost: String = ""
     )
 
     data class RemoteJob(
@@ -56,6 +58,11 @@ class CmcloudClient(private val baseUrl: String) {
     private fun api(path: String) = baseUrl.trimEnd('/') + path
 
     fun health(): JSONObject = JsonHttp.requestJson("GET", api("/api/health"))
+
+    fun nodeInfo(target: String): JSONObject {
+        val encoded = URLEncoder.encode(target, Charsets.UTF_8.name())
+        return JsonHttp.requestJson("GET", api("/api/signal/node-info?target=$encoded"))
+    }
 
     fun startPrepareDownloadJob(): RemoteJob {
         val json = JsonHttp.requestJson("POST", api("/api/signal/jobs/prepare-download"), JSONObject())
@@ -85,14 +92,15 @@ class CmcloudClient(private val baseUrl: String) {
             sha256 = result.getString("sha256"),
             cached = result.optBoolean("cached", false),
             name = result.optString("name", ""),
-            mediaType = result.optString("media_type", "")
+            mediaType = result.optString("media_type", ""),
+            eosHost = result.optString("eos_host", "")
         )
     }
 
     private fun parseRemoteJob(json: JSONObject): RemoteJob = RemoteJob(
         jobId = json.getString("job_id"),
-        state = json.optString("state", "unknown"),
-        phase = json.optString("phase", "unknown"),
+        state = json.optString("state", "not_reported"),
+        phase = json.optString("phase", "not_reported"),
         progressBytes = json.optLong("progress_bytes", 0L),
         totalBytes = json.optLong("total_bytes", 0L),
         currentMbps = json.optDouble("current_mbps", 0.0),

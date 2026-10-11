@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build:
-    name: Build debug APK
+    name: Build release APK
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -38,13 +38,13 @@ jobs:
         with:
           gradle-version: '9.6.0'
 
-      - name: Build APK
-        run: gradle :app:assembleDebug --stacktrace
+      - name: Build unsigned release APK
+        run: gradle :app:assembleRelease --stacktrace
 
-      - name: Upload APK
+      - name: Upload unsigned APK for private signing
         uses: actions/upload-artifact@v4
         with:
-          name: Signal-debug-${{ github.sha }}
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: Signal-unsigned-${{ github.sha }}
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
           if-no-files-found: error
           retention-days: 14

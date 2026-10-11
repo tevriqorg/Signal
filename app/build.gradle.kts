@@ -5,6 +5,13 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val signalKeystorePath = System.getenv("SIGNAL_KEYSTORE_PATH")
+val signalStorePassword = System.getenv("SIGNAL_KEYSTORE_PASSWORD")
+val signalKeyAlias = System.getenv("SIGNAL_KEY_ALIAS")
+val signalKeyPassword = System.getenv("SIGNAL_KEY_PASSWORD")
+val hasSignalSigning = listOf(signalKeystorePath, signalStorePassword, signalKeyAlias, signalKeyPassword)
+    .all { !it.isNullOrBlank() }
+
 android {
     namespace = "com.wb.signalpro"
     compileSdk = 36
@@ -13,13 +20,27 @@ android {
         applicationId = "com.wb.signalpro"
         minSdk = 29
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.2.0-alpha.2"
+        versionCode = 4
+        versionName = "0.2.0-alpha.3"
+    }
+
+    signingConfigs {
+        if (hasSignalSigning) {
+            create("signalRelease") {
+                storeFile = file(signalKeystorePath!!)
+                storePassword = signalStorePassword
+                keyAlias = signalKeyAlias
+                keyPassword = signalKeyPassword
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (hasSignalSigning) {
+                signingConfig = signingConfigs.getByName("signalRelease")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

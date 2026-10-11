@@ -7,6 +7,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -36,7 +37,33 @@ data class StageUi(
     val progress: Int? = 0,
     val done: Boolean = false,
     val active: Boolean = false,
-    val failed: Boolean = false
+    val failed: Boolean = false,
+    val doneBytes: Long = 0L,
+    val totalBytes: Long = 0L,
+    val currentMbps: Double = 0.0,
+    val averageMbps: Double = 0.0
+)
+
+data class ProbeMeta(
+    val label: String = "Remote Probe",
+    val city: String = "",
+    val country: String = "",
+    val provider: String = "",
+    val asn: String = "",
+    val version: String = ""
+)
+
+data class NodeUi(
+    val target: String = "",
+    val ip: String = "",
+    val hostname: String = "",
+    val asn: String = "",
+    val asName: String = "",
+    val provider: String = "",
+    val city: String = "",
+    val region: String = "",
+    val countryCode: String = "",
+    val sources: String = ""
 )
 
 data class CmcloudUiState(
@@ -44,6 +71,8 @@ data class CmcloudUiState(
     val probeDraft: String = "",
     val probeState: ProbeState = ProbeState.EMPTY,
     val probeMessage: String = "先配置 Remote Probe",
+    val probeMeta: ProbeMeta? = null,
+    val eosInfo: NodeUi? = null,
     val testState: TestState = TestState.IDLE,
     val testTitle: String = "",
     val summary: String = "",
@@ -85,7 +114,7 @@ class CmcloudViewModel(app: Application) : AndroidViewModel(app) {
     fun clearProbe() {
         if (_ui.value.testState == TestState.RUNNING) return
         ProbeSettings.clearBaseUrl(getApplication())
-        _ui.value = _ui.value.copy(probeUrl = "", probeDraft = "", probeState = ProbeState.EMPTY, probeMessage = "先配置 Remote Probe")
+        _ui.value = _ui.value.copy(probeUrl = "", probeDraft = "", probeState = ProbeState.EMPTY, probeMessage = "先配置 Remote Probe", probeMeta = null, eosInfo = null)
     }
 
     private fun checkProbe(url: String, saveOnSuccess: Boolean) {
@@ -96,7 +125,14 @@ class CmcloudViewModel(app: Application) : AndroidViewModel(app) {
                 val health = withContext(Dispatchers.IO) { CmcloudClient(url).health() }
                 if (!health.optBoolean("ok", false)) error("Probe 返回异常状态")
                 if (saveOnSuccess) ProbeSettings.setBaseUrl(getApplication(), url)
-                _ui.value = _ui.value.copy(probeUrl = url, probeDraft = url, probeState = ProbeState.READY, probeMessage = "✓ 已连接 · 配置已固化")
+                val meta = health.optJSONObject("probe")
+                val probeMeta = ProbeMeta(
+                    label = meta?.optString("label").orEmpty().ifBlank { "Remote Probe" },
+                    city = meta?.optString("city").orEmpty(), country = meta?.optString("country").orEmpty(),
+                    provider = meta?.optString("provider").orEmpty(), asn = meta?.optString("asn").orEmpty(),
+                    version = health.optString("version")
+                )
+                _ui.value = _ui.value.copy(probeUrl = url, probeDraft = url, probeState = ProbeState.READY, probeMessage = "✓ 已连接 · 配置已固化", probeMeta = probeMeta)
             } catch (t: Throwable) {
                 _ui.value = _ui.value.copy(probeUrl = url, probeDraft = url, probeState = ProbeState.ERROR, probeMessage = "Probe 不可用：${shortError(t)}")
             }
@@ -124,7 +160,15 @@ class CmcloudViewModel(app: Application) : AndroidViewModel(app) {
                 "tokyo_to_cmcloud" -> updateTransferStage(2, "Tokyo VPS → CMCloud", job)
             }
             when (job.state) {
-                "completed" -> { prepared = client.preparedFromJob(job); completeStage(2, "Tokyo VPS → CMCloud 完成", "${prepared.name} · ${formatBytes(prepared.size)} · 平均 ${fmtMbps(job.averageMbps)}"); break }
+                "completed" -> {
+                    prepared = client.preparedFromJob(job)
+                    if (prepared.eosHost.isNotBlank()) {
+                        ProbeSettings.setLastEos(getApplication(), prepared.eosHost)
+                        loadNodeInfo(client, prepared.eosHost)
+                    }
+                    completeStage(2, "Tokyo VPS → CMCloud 完成", "${prepared.name} · ${formatBytes(prepared.size)} · 平均 ${fmtMbps(job.averageMbps)}")
+                    break
+                }
                 "failed" -> error(job.error ?: "Tokyo 上传失败")
                 "cancelled" -> throw CancellationException("remote cancelled")
             }
@@ -142,6 +186,7 @@ class CmcloudViewModel(app: Application) : AndroidViewModel(app) {
         if (result.sha256Match == true) completeStage(4, "完整性校验通过", "SHA-256 ✓ · 两端内容一致")
         else failStage(4, "完整性校验失败", "SHA-256 ✗").also { error("SHA-256 mismatch") }
         ProbeSettings.setLastEos(getApplication(), result.eosHost)
+        loadNodeInfo(client, result.eosHost)
         traceEos(result.eosHost, 5)
         updateStage(6, "清理测试文件", "正在从 CMCloud 回收对象", 40, active = true)
         withContext(Dispatchers.IO) { client.trash(p.sessionId) }
@@ -164,11 +209,12 @@ class CmcloudViewModel(app: Application) : AndroidViewModel(app) {
             updateStage(2, "本机 → CMCloud", "申请上传 capability", 2, active = true)
             val upload = withContext(Dispatchers.IO) {
                 client.upload(sample, shouldCancel = { stopRequested.get() }, onCapability = { host -> ProbeSettings.setLastEos(getApplication(), host) }) { progress ->
-                    updateStageThreadsafe(2, "本机 → CMCloud", transferDetail(progress), pct(progress.done, progress.total))
+                    updateTransferStageThreadsafe(2, "本机 → CMCloud", progress)
                 }
             }
             completeStage(2, "本机 → CMCloud 完成", "${formatBytes(upload.bytes)} · 平均 ${fmtMbps(upload.averageMbps)}")
             ProbeSettings.setLastEos(getApplication(), upload.eosHost)
+            loadNodeInfo(client, upload.eosHost)
             updateStage(3, "CMCloud → Tokyo VPS", "Tokyo 正在申请下载 capability", 2, active = true)
             var remote = withContext(Dispatchers.IO) { client.startVerifyDownloadJob(upload.sessionId ?: error("missing session"), sample.sha256, trash = true) }
             activeRemoteJobId = remote.jobId
@@ -220,6 +266,16 @@ class CmcloudViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private suspend fun loadNodeInfo(client: CmcloudClient, target: String) {
+        val info = withContext(Dispatchers.IO) { runCatching { client.nodeInfo(target) }.getOrNull() } ?: return
+        val sources = info.optJSONArray("sources")?.let { arr -> (0 until arr.length()).joinToString(" + ") { arr.optString(it) } }.orEmpty()
+        _ui.value = _ui.value.copy(eosInfo = NodeUi(
+            target = target, ip = info.optString("ip"), hostname = info.optString("hostname"),
+            asn = info.optString("asn"), asName = info.optString("as_name"), provider = info.optString("provider"),
+            city = info.optString("city"), region = info.optString("region"), countryCode = info.optString("country_code"), sources = sources
+        ))
+    }
+
     private suspend fun traceEos(host: String, stageId: Int) {
         updateStage(stageId, "手机侧路径分析", "traceroute → $host", 4, active = true)
         val hops = sortedMapOf<Int, HopStatus>()
@@ -243,11 +299,17 @@ class CmcloudViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun privateLike(ip: String) = runCatching { InetAddress.getByName(ip).let { it.isSiteLocalAddress || it.isLinkLocalAddress || it.isLoopbackAddress } }.getOrDefault(false)
     private fun ensureRunning() { if (stopRequested.get()) throw CancellationException("user stopped") }
-    private fun updateTransferStage(id: Int, title: String, job: CmcloudClient.RemoteJob) = updateStage(id, title, "${formatBytes(job.progressBytes)} / ${formatBytes(job.totalBytes)} · 当前 ${fmtMbps(job.currentMbps)} · 平均 ${fmtMbps(job.averageMbps)}", pct(job.progressBytes, job.totalBytes), active = true)
-    private fun transferDetail(p: CmcloudClient.TransferProgress) = "${formatBytes(p.done)} / ${formatBytes(p.total)} · 当前 ${fmtMbps(p.currentMbps)} · 平均 ${fmtMbps(p.averageMbps)}"
+    private fun updateTransferStage(id: Int, title: String, job: CmcloudClient.RemoteJob) = updateStage(
+        id, title, "实时传输", pct(job.progressBytes, job.totalBytes), active = true,
+        doneBytes = job.progressBytes, totalBytes = job.totalBytes, currentMbps = job.currentMbps, averageMbps = job.averageMbps
+    )
+    private fun updateTransferStageThreadsafe(id: Int, title: String, p: CmcloudClient.TransferProgress) {
+        viewModelScope.launch { updateStage(id, title, "实时传输", pct(p.done, p.total), active = true, doneBytes = p.done, totalBytes = p.total, currentMbps = p.currentMbps, averageMbps = p.averageMbps) }
+    }
 
-    private fun updateStageThreadsafe(id: Int, title: String, detail: String, progress: Int) { viewModelScope.launch { updateStage(id, title, detail, progress, active = true) } }
-    private fun updateStage(id: Int, title: String, detail: String, progress: Int?, active: Boolean = false) { _ui.value = _ui.value.copy(stages = _ui.value.stages.map { if (it.id == id) it.copy(title = title, detail = detail, progress = progress, active = active, done = false, failed = false) else it }) }
+    private fun updateStage(id: Int, title: String, detail: String, progress: Int?, active: Boolean = false, doneBytes: Long = 0L, totalBytes: Long = 0L, currentMbps: Double = 0.0, averageMbps: Double = 0.0) {
+        _ui.value = _ui.value.copy(stages = _ui.value.stages.map { if (it.id == id) it.copy(title = title, detail = detail, progress = progress, active = active, done = false, failed = false, doneBytes = doneBytes, totalBytes = totalBytes, currentMbps = currentMbps, averageMbps = averageMbps) else it })
+    }
     private fun completeStage(id: Int, title: String, detail: String) { _ui.value = _ui.value.copy(stages = _ui.value.stages.map { if (it.id == id) it.copy(title = title, detail = detail, progress = 100, active = false, done = true, failed = false) else it }) }
     private fun failStage(id: Int, title: String, detail: String) { _ui.value = _ui.value.copy(stages = _ui.value.stages.map { if (it.id == id) it.copy(title = title, detail = detail, active = false, failed = true) else it }) }
     private fun normalize(value: String): String? = value.trim().trimEnd('/').takeIf { it.startsWith("https://") }
@@ -266,28 +328,76 @@ class CmcloudTestActivity : ComponentActivity() {
 private fun CmcloudScreen(vm: CmcloudViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
     val state by vm.ui.collectAsStateWithLifecycle()
     val running = state.testState == TestState.RUNNING
+    val listState = rememberLazyListState()
+    val showWarning = state.probeState != ProbeState.READY
+    val showResults = state.testState != TestState.IDLE || state.stages.isNotEmpty()
+    val summaryIndex = 3 + if (showWarning) 1 else 0
+    val stageStartIndex = summaryIndex + 1
+    val activeStageIndex = state.stages.indexOfFirst { it.active }
+
+    LaunchedEffect(activeStageIndex, state.traceLines.size, showResults) {
+        when {
+            showResults && activeStageIndex >= 0 -> listState.animateScrollToItem(stageStartIndex + activeStageIndex)
+            showResults && state.traceLines.isNotEmpty() -> {
+                val traceStart = stageStartIndex + state.stages.size + 1
+                listState.animateScrollToItem(traceStart + state.traceLines.lastIndex)
+            }
+            showResults -> listState.animateScrollToItem(summaryIndex)
+        }
+    }
+
     Scaffold(topBar = { TopAppBar(title = { Text("CMCloud 真实链路") }) }) { pad ->
-        LazyColumn(Modifier.padding(pad).fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.padding(pad).fillMaxSize(),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
             item { ProbeCard(state, vm, running) }
-            item { TestRouteCard("服务器 → 云盘 → 本机", "Tokyo VPS → CMCloud → 这台手机", "同时观察服务器上传和云盘到手机", state.probeState == ProbeState.READY && !running) { vm.startServerToPhone() } }
-            item { TestRouteCard("本机 → 云盘 → 服务器", "这台手机 → CMCloud → Tokyo VPS", "同时观察手机上传和 Tokyo 实际接收/落盘", state.probeState == ProbeState.READY && !running) { vm.startPhoneToServer() } }
-            if (state.probeState != ProbeState.READY) item { Text("请先让 Remote Probe 变为“已连接”，测试入口才会启用。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            if (state.testState != TestState.IDLE || state.stages.isNotEmpty()) {
-                item {
-                    ElevatedCard { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(state.testTitle, style = MaterialTheme.typography.titleLarge)
-                        Text(state.summary, color = when(state.testState){ TestState.ERROR -> MaterialTheme.colorScheme.error; TestState.SUCCESS -> MaterialTheme.colorScheme.primary; else -> MaterialTheme.colorScheme.onSurfaceVariant })
-                        if (running) { LinearProgressIndicator(Modifier.fillMaxWidth()); OutlinedButton(onClick = vm::stopTest) { Text("停止测试") } }
-                        else if (state.testState == TestState.SUCCESS) Text("✓ 测试完成", color = MaterialTheme.colorScheme.primary)
-                        else if (state.testState == TestState.CANCELLED) Text("已取消")
-                    } }
-                }
-                items(state.stages) { StageCard(it) }
+            item { TestRouteCard("服务器 → 云盘 → 本机", "Tokyo VPS → CMCloud → 这台手机", "服务器上传、云盘到手机，两段分别实时显示", state.probeState == ProbeState.READY && !running) { vm.startServerToPhone() } }
+            item { TestRouteCard("本机 → 云盘 → 服务器", "这台手机 → CMCloud → Tokyo VPS", "手机上传、Tokyo 实际接收/落盘，两段分别实时显示", state.probeState == ProbeState.READY && !running) { vm.startPhoneToServer() } }
+            if (showWarning) item { Text("请先让 Remote Probe 变为“已连接”，测试入口才会启用。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            if (showResults) {
+                item { TestSummaryCard(state, running, vm::stopTest) }
+                items(state.stages, key = { it.id }) { StageCard(it) }
                 if (state.traceLines.isNotEmpty()) {
                     item { Text("手机侧真实路由", style = MaterialTheme.typography.titleMedium) }
                     items(state.traceLines) { line -> ElevatedCard { Text(line, Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall) } }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun TestSummaryCard(state: CmcloudUiState, running: Boolean, onStop: () -> Unit) {
+    ElevatedCard {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(state.testTitle, style = MaterialTheme.typography.titleLarge)
+            Text(
+                state.summary,
+                color = when (state.testState) {
+                    TestState.ERROR -> MaterialTheme.colorScheme.error
+                    TestState.SUCCESS -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
+            state.eosInfo?.let { node ->
+                HorizontalDivider()
+                Text("本次 CMCloud 节点", style = MaterialTheme.typography.titleSmall)
+                Text(node.hostname.ifBlank { node.target }, style = MaterialTheme.typography.bodyMedium)
+                val identity = listOf(node.asn, node.provider.ifBlank { node.asName }).filter { it.isNotBlank() }.joinToString(" · ")
+                val place = listOf(node.city, node.region, node.countryCode).filter { it.isNotBlank() }.distinct().joinToString(" · ")
+                if (identity.isNotBlank()) Text("◆ $identity", style = MaterialTheme.typography.labelMedium)
+                if (place.isNotBlank()) Text("位置数据库：$place", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (node.ip.isNotBlank()) Text(node.ip, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (node.sources.isNotBlank()) Text("来源：${node.sources}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+            }
+            if (running) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+                OutlinedButton(onClick = onStop) { Text("停止测试") }
+            } else if (state.testState == TestState.SUCCESS) Text("✓ 测试完成", color = MaterialTheme.colorScheme.primary)
+            else if (state.testState == TestState.CANCELLED) Text("已取消")
         }
     }
 }
@@ -301,10 +411,16 @@ private fun ProbeCard(state: CmcloudUiState, vm: CmcloudViewModel, running: Bool
                 OutlinedTextField(state.probeDraft, vm::setProbeDraft, Modifier.fillMaxWidth(), singleLine = true, label = { Text("HTTPS 地址") }, enabled = !running)
                 Button(onClick = vm::saveAndCheck, enabled = !running && state.probeDraft.isNotBlank()) { Text("保存并检查") }
             }
-            ProbeState.CHECKING -> { Text(state.probeDraft); LinearProgressIndicator(Modifier.fillMaxWidth()); Text("正在检查…") }
+            ProbeState.CHECKING -> { Text(state.probeDraft); LinearProgressIndicator(Modifier.fillMaxWidth()); Text("正在检查节点身份和能力…") }
             ProbeState.READY -> {
                 Text("✓ 已连接", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleMedium)
-                Text(state.probeUrl, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                state.probeMeta?.let { meta ->
+                    Text(meta.label, style = MaterialTheme.typography.titleSmall)
+                    val where = listOf(meta.city, meta.country, meta.provider, meta.asn).filter { it.isNotBlank() }.joinToString(" · ")
+                    if (where.isNotBlank()) Text(where, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (meta.version.isNotBlank()) Text("Probe ${meta.version}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                }
+                Text(state.probeUrl, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = {}, enabled = false) { Text("✓ 已保存") }
                     OutlinedButton(onClick = vm::clearProbe, enabled = !running) { Text("清除") }
@@ -328,16 +444,39 @@ private fun TestRouteCard(title: String, route: String, description: String, ena
         Text(title, style = MaterialTheme.typography.titleLarge)
         Text(route, color = MaterialTheme.colorScheme.primary)
         Text(description, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Button(onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth()) { Text("开始测试") }
+        Button(onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth()) { Text("开始完整链路测试") }
     } }
 }
 
 @Composable
 private fun StageCard(stage: StageUi) {
-    ElevatedCard { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("${stage.id}. ${stage.title}", style = MaterialTheme.typography.titleMedium, color = when { stage.failed -> MaterialTheme.colorScheme.error; stage.done -> MaterialTheme.colorScheme.primary; else -> MaterialTheme.colorScheme.onSurface })
-        Text(stage.detail, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        stage.progress?.let { LinearProgressIndicator(progress = { it / 100f }, modifier = Modifier.fillMaxWidth()) }
-        Text(when { stage.failed -> "失败"; stage.done -> "✓ 完成"; stage.active -> "● 进行中"; else -> "○ 等待" }, style = MaterialTheme.typography.labelMedium)
-    } }
+    val statusText = when { stage.failed -> "失败"; stage.done -> "✓ 完成"; stage.active -> "● 进行中"; else -> "○ 等待" }
+    val statusColor = when { stage.failed -> MaterialTheme.colorScheme.error; stage.done -> MaterialTheme.colorScheme.primary; stage.active -> MaterialTheme.colorScheme.tertiary; else -> MaterialTheme.colorScheme.onSurfaceVariant }
+    ElevatedCard {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("${stage.id}. ${stage.title}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), color = when { stage.failed -> MaterialTheme.colorScheme.error; stage.done -> MaterialTheme.colorScheme.primary; else -> MaterialTheme.colorScheme.onSurface })
+                Text(statusText, color = statusColor, style = MaterialTheme.typography.labelMedium)
+            }
+            if (stage.totalBytes > 0L) {
+                Text("${formatStageBytes(stage.doneBytes)} / ${formatStageBytes(stage.totalBytes)}", style = MaterialTheme.typography.bodyMedium)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column { Text("当前", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(String.format(Locale.US, "%.2f Mbps", stage.currentMbps), fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold) }
+                    Column(horizontalAlignment = Alignment.End) { Text("平均", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(String.format(Locale.US, "%.2f Mbps", stage.averageMbps), fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold) }
+                }
+            } else {
+                Text(stage.detail, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (stage.active || stage.done || stage.failed || (stage.progress ?: 0) > 0) {
+                stage.progress?.let { LinearProgressIndicator(progress = { it / 100f }, modifier = Modifier.fillMaxWidth()) }
+            }
+            if (stage.totalBytes > 0L && stage.detail.isNotBlank() && stage.detail != "实时传输") Text(stage.detail, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+private fun formatStageBytes(value: Long): String = when {
+    value >= 1024L * 1024L -> String.format(Locale.US, "%.2f MiB", value / 1024.0 / 1024.0)
+    value >= 1024L -> String.format(Locale.US, "%.1f KiB", value / 1024.0)
+    else -> "$value B"
 }
