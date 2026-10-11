@@ -35,7 +35,9 @@ class CmcloudClient(private val baseUrl: String) {
         val sessionId: String,
         val size: Long,
         val sha256: String,
-        val cached: Boolean
+        val cached: Boolean,
+        val name: String = "",
+        val mediaType: String = ""
     )
 
     data class RemoteJob(
@@ -55,11 +57,16 @@ class CmcloudClient(private val baseUrl: String) {
 
     fun health(): JSONObject = JsonHttp.requestJson("GET", api("/api/health"))
 
-    fun startPrepareDownloadJob(sizeMiB: Int): RemoteJob {
+    fun startPrepareDownloadJob(): RemoteJob {
+        val json = JsonHttp.requestJson("POST", api("/api/signal/jobs/prepare-download"), JSONObject())
+        return parseRemoteJob(json)
+    }
+
+    fun startVerifyDownloadJob(sessionId: String, expectedSha256: String, trash: Boolean = true): RemoteJob {
         val json = JsonHttp.requestJson(
             "POST",
-            api("/api/signal/jobs/prepare-download"),
-            JSONObject().put("size_mib", sizeMiB)
+            api("/api/signal/jobs/verify-download/$sessionId"),
+            JSONObject().put("expected_sha256", expectedSha256).put("trash", trash)
         )
         return parseRemoteJob(json)
     }
@@ -76,7 +83,9 @@ class CmcloudClient(private val baseUrl: String) {
             sessionId = result.getString("session_id"),
             size = result.getLong("size"),
             sha256 = result.getString("sha256"),
-            cached = result.optBoolean("cached", false)
+            cached = result.optBoolean("cached", false),
+            name = result.optString("name", ""),
+            mediaType = result.optString("media_type", "")
         )
     }
 
