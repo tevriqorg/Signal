@@ -61,7 +61,7 @@ class CmcloudClient(private val baseUrl: String) {
 
     fun nodeInfo(target: String): JSONObject {
         val encoded = URLEncoder.encode(target, Charsets.UTF_8.name())
-        return JsonHttp.requestJson("GET", api("/api/signal/node-info?target=$encoded"))
+        return JsonHttp.requestJson("GET", api("/api/signal/node-info?target=$encoded"), timeoutMs = 5_000)
     }
 
     fun startPrepareDownloadJob(): RemoteJob {

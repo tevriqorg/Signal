@@ -21,6 +21,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import me.impa.icmpenguin.trace.HopStatus
 import me.impa.icmpenguin.trace.Response
 import me.impa.icmpenguin.trace.SimpleTracer
@@ -191,7 +193,7 @@ class CmcloudViewModel(app: Application) : AndroidViewModel(app) {
         else failStage(4, "完整性校验失败", "SHA-256 ✗").also { error("SHA-256 mismatch") }
         ProbeSettings.setLastEos(getApplication(), result.eosHost)
         loadNodeInfo(client, result.eosHost)
-        traceEos(result.eosHost, 5)
+        traceEos(client, result.eosHost, 5)
         updateStage(6, "清理测试文件", "正在从 CMCloud 回收对象", 40, active = true)
         withContext(Dispatchers.IO) { client.trash(p.sessionId) }
         completeStage(6, "清理完成", "随机测试文件已从云盘回收")
@@ -241,7 +243,7 @@ class CmcloudViewModel(app: Application) : AndroidViewModel(app) {
             completeStage(3, "CMCloud → Tokyo VPS 完成", "${formatBytes(verify.optLong("size"))} · 平均 ${fmtMbps(remote.averageMbps)} · 已实际落盘")
             if (verify.optBoolean("sha256_match", false)) completeStage(4, "Tokyo 完整性校验通过", "SHA-256 ✓ · 本机与 Tokyo 内容一致")
             else failStage(4, "Tokyo 完整性校验失败", "SHA-256 ✗").also { error("Tokyo SHA-256 mismatch") }
-            traceEos(upload.eosHost, 5)
+            traceEos(client, upload.eosHost, 5)
             completeStage(6, "清理完成", if (verify.optBoolean("trashed", false)) "测试对象已从 CMCloud 回收" else "远端未确认清理")
             _ui.value = _ui.value.copy(summary = "完成 · 手机 ${fmtMbps(upload.averageMbps)} · Tokyo ${fmtMbps(remote.averageMbps)}")
         } finally { sample.file.delete() }
@@ -282,25 +284,60 @@ class CmcloudViewModel(app: Application) : AndroidViewModel(app) {
         ))
     }
 
-    private suspend fun traceEos(host: String, stageId: Int) {
+    private suspend fun traceEos(client: CmcloudClient, host: String, stageId: Int) = coroutineScope {
         updateStage(stageId, "手机侧路径分析", "traceroute → $host", 4, active = true)
         val hops = sortedMapOf<Int, HopStatus>()
+        val intel = mutableMapOf<Int, Pair<String, String>>()
+        val requested = mutableSetOf<Pair<Int, String>>()
+        val jobs = mutableListOf<Job>()
+        val gate = Semaphore(4)
         try {
             SimpleTracer(host = host, timeout = 2500, maxHops = 30, probesPerHop = 2).trace().collect { hop ->
                 hops[hop.num] = hop
-                _ui.value = _ui.value.copy(traceLines = formatHops(hops.values.toList()))
+                _ui.value = _ui.value.copy(traceLines = formatHops(hops.values.toList(), intel))
+                val ip = hop.ips.firstOrNull()
+                val key = ip?.let { hop.num to it }
+                if (ip != null && !privateLike(ip) && key != null && requested.add(key)) {
+                    jobs += launch {
+                        val label = gate.withPermit {
+                            val info = withContext(Dispatchers.IO) { runCatching { client.nodeInfo(ip) }.getOrNull() }
+                            formatNodeInfo(info)
+                        }
+                        if (hops[hop.num]?.ips?.firstOrNull() == ip) {
+                            intel[hop.num] = ip to label
+                            _ui.value = _ui.value.copy(traceLines = formatHops(hops.values.toList(), intel))
+                        }
+                    }
+                }
                 updateStage(stageId, "手机侧路径分析", if (hop.isLast) "已到达 $host · ${hop.num} 跳" else "正在测第 ${hop.num} 跳", if (hop.isLast) 100 else minOf(95, hop.num * 4), active = !hop.isLast)
             }
-            completeStage(stageId, "手机侧路径分析完成", "记录 ${hops.size} 个 hop")
+            jobs.joinAll()
+            completeStage(stageId, "手机侧路径分析完成", "记录 ${hops.size} 个 hop · ASN/运营商/位置识别已完成")
         } catch (t: Throwable) { completeStage(stageId, "路径分析已结束", "部分节点不响应：${shortError(t)}") }
     }
 
-    private fun formatHops(hops: List<HopStatus>) = hops.map { hop ->
+    private fun formatHops(hops: List<HopStatus>, intel: Map<Int, Pair<String, String>>) = hops.map { hop ->
         val ips = if (hop.ips.isEmpty()) listOf("*") else hop.ips.toList()
+        val primary = hop.ips.firstOrNull()
         val times = hop.probes.mapNotNull { (it as? Response.Success)?.timeUsec }
         val delay = if (times.isEmpty()) "超时" else String.format(Locale.US, "%.1f ms", times.average() / 1000.0)
-        val role = when { hop.isLast -> "● 目标 CMCloud EOS"; ips.any { privateLike(it) } -> "◇ 接入 / 运营商内部（推断）"; else -> "◇ 公网 / 骨干（待识别）" }
+        val identified = primary?.let { ip -> intel[hop.num]?.takeIf { it.first == ip }?.second }
+        val role = when {
+            primary == null -> "未收到这一跳的 ICMP 回复"
+            privateLike(primary) -> "◇ 接入 / 运营商内部（推断）"
+            identified != null && hop.isLast -> "● 目标 CMCloud EOS · $identified"
+            identified != null -> identified
+            hop.isLast -> "● 目标 CMCloud EOS · 正在识别 ASN、运营商和位置…"
+            else -> "正在识别 ASN、运营商和位置…"
+        }
         "${hop.num}. ${ips.joinToString(" / ")} · $delay · $role"
+    }
+
+    private fun formatNodeInfo(info: org.json.JSONObject?): String {
+        if (info == null) return "◇ 节点已响应 · 识别服务暂时不可用"
+        val identity = listOf(info.optString("asn"), info.optString("provider").ifBlank { info.optString("as_name") }).filter { it.isNotBlank() }.joinToString(" · ")
+        val place = listOf(info.optString("city"), info.optString("region"), info.optString("country_code")).filter { it.isNotBlank() }.distinct().joinToString(" · ")
+        return listOf(identity.takeIf { it.isNotBlank() }?.let { "◆ $it" }, place.takeIf { it.isNotBlank() }?.let { "位置数据库：$it" }).filterNotNull().joinToString(" · ").ifBlank { "◇ 节点已响应 · 数据库未识别" }
     }
 
     private fun privateLike(ip: String) = runCatching { InetAddress.getByName(ip).let { it.isSiteLocalAddress || it.isLinkLocalAddress || it.isLoopbackAddress } }.getOrDefault(false)

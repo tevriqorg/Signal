@@ -110,7 +110,10 @@ class DiagnosticsViewModel(app: Application) : AndroidViewModel(app) {
     private fun trace(host: String, label: String) = launch("路由跟踪 · $label", label) {
         val latest = sortedMapOf<Int, HopUi>()
         SimpleTracer(host = host, timeout = 3000, maxHops = 30, probesPerHop = 3).trace().collect { raw ->
-            val previous = latest[raw.num]
+            // Prefer the live UI row because enrichment updates it asynchronously.
+            // Using only `latest` here can resurrect a stale "正在识别" row after
+            // ASN/location has already returned.
+            val previous = _ui.value.hops.firstOrNull { it.number == raw.num } ?: latest[raw.num]
             val hop = hopFrom(raw, previous)
             latest[raw.num] = hop
             _ui.value = _ui.value.copy(
@@ -171,7 +174,9 @@ class DiagnosticsViewModel(app: Application) : AndroidViewModel(app) {
     private fun enrichHop(number: Int, ip: String) {
         val job = viewModelScope.launch(Dispatchers.IO) {
             enrichGate.withPermit {
-                val info = remoteNodeInfo(ip) ?: localNodeInfo(ip)
+                val info = remoteNodeInfo(ip) ?: JSONObject().apply {
+                    put("sources", org.json.JSONArray().put("识别服务暂时不可用"))
+                }
                 withContext(Dispatchers.Main) {
                     _ui.value = _ui.value.copy(hops = _ui.value.hops.map { hop ->
                         if (hop.number != number || hop.ip != ip) hop else hop.copy(
