@@ -2,6 +2,7 @@ package com.wb.signalpro
 
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.CancellationException
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
@@ -37,9 +38,60 @@ class CmcloudClient(private val baseUrl: String) {
         val cached: Boolean
     )
 
+    data class RemoteJob(
+        val jobId: String,
+        val state: String,
+        val phase: String,
+        val progressBytes: Long,
+        val totalBytes: Long,
+        val currentMbps: Double,
+        val averageMbps: Double,
+        val elapsedMs: Double,
+        val result: JSONObject?,
+        val error: String?
+    )
+
     private fun api(path: String) = baseUrl.trimEnd('/') + path
 
     fun health(): JSONObject = JsonHttp.requestJson("GET", api("/api/health"))
+
+    fun startPrepareDownloadJob(sizeMiB: Int): RemoteJob {
+        val json = JsonHttp.requestJson(
+            "POST",
+            api("/api/signal/jobs/prepare-download"),
+            JSONObject().put("size_mib", sizeMiB)
+        )
+        return parseRemoteJob(json)
+    }
+
+    fun getRemoteJob(jobId: String): RemoteJob =
+        parseRemoteJob(JsonHttp.requestJson("GET", api("/api/signal/jobs/$jobId")))
+
+    fun cancelRemoteJob(jobId: String): RemoteJob =
+        parseRemoteJob(JsonHttp.requestJson("POST", api("/api/signal/jobs/$jobId/cancel"), JSONObject()))
+
+    fun preparedFromJob(job: RemoteJob): PreparedDownload {
+        val result = job.result ?: error("remote job has no result")
+        return PreparedDownload(
+            sessionId = result.getString("session_id"),
+            size = result.getLong("size"),
+            sha256 = result.getString("sha256"),
+            cached = result.optBoolean("cached", false)
+        )
+    }
+
+    private fun parseRemoteJob(json: JSONObject): RemoteJob = RemoteJob(
+        jobId = json.getString("job_id"),
+        state = json.optString("state", "unknown"),
+        phase = json.optString("phase", "unknown"),
+        progressBytes = json.optLong("progress_bytes", 0L),
+        totalBytes = json.optLong("total_bytes", 0L),
+        currentMbps = json.optDouble("current_mbps", 0.0),
+        averageMbps = json.optDouble("average_mbps", 0.0),
+        elapsedMs = json.optDouble("elapsed_ms", 0.0),
+        result = json.optJSONObject("result"),
+        error = json.optString("error").takeIf { it.isNotBlank() }
+    )
 
     fun prepareDownload(sizeMiB: Int): PreparedDownload {
         val json = JsonHttp.requestJson(
@@ -58,6 +110,7 @@ class CmcloudClient(private val baseUrl: String) {
 
     fun download(
         prepared: PreparedDownload,
+        shouldCancel: () -> Boolean = { false },
         onCapability: (String) -> Unit = {},
         onProgress: (TransferProgress) -> Unit
     ): TransferResult {
@@ -87,6 +140,7 @@ class CmcloudClient(private val baseUrl: String) {
             BufferedInputStream(connection.inputStream, 256 * 1024).use { input ->
                 val buffer = ByteArray(256 * 1024)
                 while (true) {
+                    if (shouldCancel()) throw CancellationException("transfer cancelled")
                     val count = input.read(buffer)
                     if (count < 0) break
                     digest.update(buffer, 0, count)
@@ -117,6 +171,7 @@ class CmcloudClient(private val baseUrl: String) {
 
     fun upload(
         sample: SyntheticMedia.Sample,
+        shouldCancel: () -> Boolean = { false },
         onCapability: (String) -> Unit = {},
         onProgress: (TransferProgress) -> Unit
     ): TransferResult {
@@ -157,12 +212,13 @@ class CmcloudClient(private val baseUrl: String) {
             var eosHost = "--"
             RandomAccessFile(sample.file, "r").use { file ->
                 for (number in 1..partCount) {
+                    if (shouldCancel()) throw CancellationException("transfer cancelled")
                     val signedUrl = urls[number] ?: error("missing part $number capability")
                     if (eosHost == "--") eosHost = URL(signedUrl).host
                     val offset = (number - 1L) * partSize
                     val length = minOf(partSize, size - offset)
                     file.seek(offset)
-                    putPart(signedUrl, file, length) { partDone ->
+                    putPart(signedUrl, file, length, shouldCancel) { partDone ->
                         val done = totalDone + partDone
                         val now = System.nanoTime()
                         if (now - lastAt >= 200_000_000L || done == size) {
@@ -205,6 +261,7 @@ class CmcloudClient(private val baseUrl: String) {
         signedUrl: String,
         file: RandomAccessFile,
         length: Long,
+        shouldCancel: () -> Boolean,
         onPartProgress: (Long) -> Unit
     ) {
         val connection = (URL(signedUrl).openConnection() as HttpURLConnection).apply {
@@ -221,6 +278,7 @@ class CmcloudClient(private val baseUrl: String) {
             BufferedOutputStream(connection.outputStream, 256 * 1024).use { output ->
                 val buffer = ByteArray(256 * 1024)
                 while (sent < length) {
+                    if (shouldCancel()) throw CancellationException("transfer cancelled")
                     val count = minOf(buffer.size.toLong(), length - sent).toInt()
                     file.readFully(buffer, 0, count)
                     output.write(buffer, 0, count)

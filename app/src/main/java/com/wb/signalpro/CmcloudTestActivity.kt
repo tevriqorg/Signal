@@ -12,6 +12,7 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -24,11 +25,15 @@ import me.impa.icmpenguin.trace.Response
 import me.impa.icmpenguin.trace.SimpleTracer
 import java.net.InetAddress
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 
 class CmcloudTestActivity : Activity() {
     private val scope = kotlinx.coroutines.CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var testJob: Job? = null
     private var sizeMiB = 20
+    private val stopRequested = AtomicBoolean(false)
+    private var activeRemoteJobId: String? = null
+    private var activeProbeBase: String? = null
 
     private lateinit var serverInput: EditText
     private lateinit var sizeStatus: TextView
@@ -152,6 +157,7 @@ class CmcloudTestActivity : Activity() {
     private fun startUpload() {
         val base = normalizedBase() ?: return
         ProbeSettings.setBaseUrl(this, base)
+        activeProbeBase = base
         resetStages("upload")
         startBusy("手机 → CMCloud") {
             val client = CmcloudClient(base)
@@ -170,7 +176,7 @@ class CmcloudTestActivity : Activity() {
             updateStage(2, "申请临时 capability", "控制请求 → Tokyo Probe", 10)
             try {
                 val result = withContext(Dispatchers.IO) {
-                    client.upload(sample, onCapability = { host ->
+                    client.upload(sample, shouldCancel = { stopRequested.get() }, onCapability = { host ->
                         runOnUiThread { updateStage(2, "临时 capability 已签发", "Tokyo → $host · 只参与控制面", 100) }
                     }) { p ->
                         runOnUiThread {
@@ -199,21 +205,14 @@ class CmcloudTestActivity : Activity() {
     private fun startDownload() {
         val base = normalizedBase() ?: return
         ProbeSettings.setBaseUrl(this, base)
+        activeProbeBase = base
         resetStages("download")
         startBusy("CMCloud → 手机") {
             val client = CmcloudClient(base)
-            updateStage(1, "Tokyo 准备 / 复用云盘样本", "控制面请求中", 15)
-            val prepStarted = System.nanoTime()
-            val prepared = withContext(Dispatchers.IO) { client.prepareDownload(sizeMiB) }
-            updateStage(
-                1,
-                if (prepared.cached) "Tokyo 复用了已有云盘样本" else "Tokyo 已准备新的云盘样本",
-                "${formatBytes(prepared.size)} · ${elapsed(prepStarted)} ms${if (prepared.cached) " · 无需重新上传" else ""}",
-                100
-            )
+            val prepared = prepareDownloadWithRemoteProgress(client, sizeMiB)
             updateStage(2, "申请下载 capability", "控制请求 → Tokyo Probe", 20)
             val result = withContext(Dispatchers.IO) {
-                client.download(prepared, onCapability = { host ->
+                client.download(prepared, shouldCancel = { stopRequested.get() }, onCapability = { host ->
                     runOnUiThread { updateStage(2, "临时 capability 已签发", "Tokyo → $host · 只参与控制面", 100) }
                 }) { p ->
                     runOnUiThread {
@@ -236,6 +235,55 @@ class CmcloudTestActivity : Activity() {
             traceEos(result.eosHost)
             summary.text = "完成 · CMCloud → 手机 ${fmtMbps(result.averageMbps)}"
             summary.setTextColor(if (result.sha256Match == true) GREEN else ORANGE)
+        }
+    }
+
+    private suspend fun prepareDownloadWithRemoteProgress(client: CmcloudClient, sizeMiB: Int): CmcloudClient.PreparedDownload {
+        updateStage(1, "Tokyo 准备 / 复用云盘样本", "正在创建 Remote Probe job", 3)
+        var job = withContext(Dispatchers.IO) { client.startPrepareDownloadJob(sizeMiB) }
+        activeRemoteJobId = job.jobId
+        try {
+            while (true) {
+                if (stopRequested.get()) {
+                    withContext(Dispatchers.IO) { runCatching { client.cancelRemoteJob(job.jobId) } }
+                    throw CancellationException("user stopped")
+                }
+                job = withContext(Dispatchers.IO) { client.getRemoteJob(job.jobId) }
+                when (job.phase) {
+                    "queued", "checking_cache" -> updateStage(1, "Tokyo 检查可复用样本", "控制面 · ${job.elapsedMs.toLong()} ms", 5)
+                    "generating_sample" -> updateStage(
+                        1,
+                        "Tokyo 生成真实 WAV 样本",
+                        "${percent(job.progressBytes, job.totalBytes)}% · ${formatBytes(job.progressBytes)} / ${formatBytes(job.totalBytes)}",
+                        percent(job.progressBytes, job.totalBytes)
+                    )
+                    "requesting_upload_capability" -> updateStage(1, "Tokyo 申请云盘上传 capability", "即将开始 Tokyo → CMCloud", 15)
+                    "tokyo_to_cmcloud" -> updateStage(
+                        1,
+                        "Tokyo VPS → CMCloud EOS",
+                        "${percent(job.progressBytes, job.totalBytes)}% · 当前 ${fmtMbps(job.currentMbps)} · 平均 ${fmtMbps(job.averageMbps)} · ${formatBytes(job.progressBytes)}",
+                        percent(job.progressBytes, job.totalBytes)
+                    )
+                    "cancelling" -> updateStage(1, "正在停止 Tokyo job", "等待当前网络操作结束", 95)
+                }
+                when (job.state) {
+                    "completed" -> {
+                        val prepared = client.preparedFromJob(job)
+                        updateStage(
+                            1,
+                            if (prepared.cached) "Tokyo 复用已有 CMCloud 样本" else "Tokyo VPS → CMCloud 完成",
+                            if (prepared.cached) "${formatBytes(prepared.size)} · 本次没有重新上传" else "${formatBytes(prepared.size)} · 平均 ${fmtMbps(job.averageMbps)} · ${job.elapsedMs.toLong()} ms",
+                            100
+                        )
+                        return prepared
+                    }
+                    "failed" -> throw IllegalStateException(job.error ?: "Tokyo Remote Probe job failed")
+                    "cancelled" -> throw CancellationException("Tokyo Remote Probe job cancelled")
+                }
+                delay(500)
+            }
+        } finally {
+            activeRemoteJobId = null
         }
     }
 
@@ -277,6 +325,7 @@ class CmcloudTestActivity : Activity() {
 
     private fun startBusy(label: String, block: suspend () -> Unit) {
         testJob?.cancel()
+        stopRequested.set(false)
         setBusy(true)
         summary.text = "开始：$label"
         summary.setTextColor(TEXT)
@@ -296,6 +345,12 @@ class CmcloudTestActivity : Activity() {
     }
 
     private fun stopTest() {
+        stopRequested.set(true)
+        val remoteJob = activeRemoteJobId
+        val base = activeProbeBase
+        if (remoteJob != null && !base.isNullOrBlank()) {
+            scope.launch(Dispatchers.IO) { runCatching { CmcloudClient(base).cancelRemoteJob(remoteJob) } }
+        }
         testJob?.cancel()
         testJob = null
         summary.text = "正在停止 / 已停止"
