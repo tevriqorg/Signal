@@ -57,6 +57,7 @@ class MainActivity : Activity() {
         }
         root.addView(shizukuStatus)
 
+        val actionRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val diag = Button(this).apply {
             text = "Ping / 路由跟踪"
             isAllCaps = false
@@ -64,9 +65,16 @@ class MainActivity : Activity() {
                 startActivity(Intent(this@MainActivity, DiagnosticsActivity::class.java))
             }
         }
-        root.addView(diag, LinearLayout.LayoutParams(-1, -2).apply {
-            bottomMargin = dp(10)
-        })
+        val cmcloud = Button(this).apply {
+            text = "CMCloud 实测"
+            isAllCaps = false
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, CmcloudTestActivity::class.java))
+            }
+        }
+        actionRow.addView(diag, LinearLayout.LayoutParams(0, -2, 1f))
+        actionRow.addView(cmcloud, LinearLayout.LayoutParams(0, -2, 1f))
+        root.addView(actionRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
 
         val scroll = ScrollView(this)
         content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
