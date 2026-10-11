@@ -122,6 +122,7 @@ class DiagnosticsActivity : ComponentActivity() {
 
 private data class QuickTarget(val label: String, val host: String, val sub: String)
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun DiagnosticsScreen(network: String, eos: String, vm: DiagnosticsViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
     val state by vm.ui.collectAsStateWithLifecycle()

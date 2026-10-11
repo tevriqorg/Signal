@@ -261,6 +261,7 @@ class CmcloudTestActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); setContent { SignalTheme { CmcloudScreen() } } }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CmcloudScreen(vm: CmcloudViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
     val state by vm.ui.collectAsStateWithLifecycle()
