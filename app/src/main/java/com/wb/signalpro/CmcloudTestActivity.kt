@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
@@ -63,6 +64,9 @@ data class NodeUi(
     val city: String = "",
     val region: String = "",
     val countryCode: String = "",
+    val service: String = "",
+    val serviceLocationHint: String = "",
+    val serviceHintSource: String = "",
     val sources: String = ""
 )
 
@@ -179,7 +183,7 @@ class CmcloudViewModel(app: Application) : AndroidViewModel(app) {
         updateStage(3, "CMCloud → 本机", "申请下载 capability", 2, active = true)
         val result = withContext(Dispatchers.IO) {
             client.download(p, shouldCancel = { stopRequested.get() }, onCapability = { host -> ProbeSettings.setLastEos(getApplication(), host) }) { progress ->
-                updateStageThreadsafe(3, "CMCloud → 本机", transferDetail(progress), pct(progress.done, progress.total))
+                updateTransferStageThreadsafe(3, "CMCloud → 本机", progress)
             }
         }
         completeStage(3, "CMCloud → 本机完成", "${formatBytes(result.bytes)} · 平均 ${fmtMbps(result.averageMbps)}")
@@ -272,7 +276,9 @@ class CmcloudViewModel(app: Application) : AndroidViewModel(app) {
         _ui.value = _ui.value.copy(eosInfo = NodeUi(
             target = target, ip = info.optString("ip"), hostname = info.optString("hostname"),
             asn = info.optString("asn"), asName = info.optString("as_name"), provider = info.optString("provider"),
-            city = info.optString("city"), region = info.optString("region"), countryCode = info.optString("country_code"), sources = sources
+            city = info.optString("city"), region = info.optString("region"), countryCode = info.optString("country_code"),
+            service = info.optString("service"), serviceLocationHint = info.optString("service_location_hint"),
+            serviceHintSource = info.optString("service_hint_source"), sources = sources
         ))
     }
 
@@ -305,6 +311,9 @@ class CmcloudViewModel(app: Application) : AndroidViewModel(app) {
     )
     private fun updateTransferStageThreadsafe(id: Int, title: String, p: CmcloudClient.TransferProgress) {
         viewModelScope.launch { updateStage(id, title, "实时传输", pct(p.done, p.total), active = true, doneBytes = p.done, totalBytes = p.total, currentMbps = p.currentMbps, averageMbps = p.averageMbps) }
+    }
+    private fun updateStageThreadsafe(id: Int, title: String, detail: String, progress: Int) {
+        viewModelScope.launch { updateStage(id, title, detail, progress, active = true) }
     }
 
     private fun updateStage(id: Int, title: String, detail: String, progress: Int?, active: Boolean = false, doneBytes: Long = 0L, totalBytes: Long = 0L, currentMbps: Double = 0.0, averageMbps: Double = 0.0) {
@@ -389,9 +398,15 @@ private fun TestSummaryCard(state: CmcloudUiState, running: Boolean, onStop: () 
                 val identity = listOf(node.asn, node.provider.ifBlank { node.asName }).filter { it.isNotBlank() }.joinToString(" · ")
                 val place = listOf(node.city, node.region, node.countryCode).filter { it.isNotBlank() }.distinct().joinToString(" · ")
                 if (identity.isNotBlank()) Text("◆ $identity", style = MaterialTheme.typography.labelMedium)
-                if (place.isNotBlank()) Text("位置数据库：$place", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (node.service.isNotBlank()) Text("服务识别：${node.service}", style = MaterialTheme.typography.labelMedium)
+                if (node.serviceLocationHint.isNotBlank()) Text("服务域名提示：${node.serviceLocationHint}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
+                if (place.isNotBlank()) Text("IP 地理库：$place", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (node.serviceLocationHint.isNotBlank() && place.isNotBlank() && !node.serviceLocationHint.contains(node.city, ignoreCase = true)) {
+                    Text("两种位置证据不一致，分别保留，不推定服务器物理位置。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                }
                 if (node.ip.isNotBlank()) Text(node.ip, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (node.sources.isNotBlank()) Text("来源：${node.sources}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                val sourceText = listOf(node.serviceHintSource, node.sources).filter { it.isNotBlank() }.joinToString(" + ")
+                if (sourceText.isNotBlank()) Text("来源：$sourceText", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
             }
             if (running) {
                 LinearProgressIndicator(Modifier.fillMaxWidth())
