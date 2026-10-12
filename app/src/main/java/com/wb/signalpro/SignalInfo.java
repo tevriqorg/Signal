@@ -14,6 +14,7 @@ import android.telephony.ServiceState;
 import android.telephony.SignalStrength;
 import android.telephony.SubscriptionInfo;
 import android.telephony.SubscriptionManager;
+import android.os.Build;
 import android.telephony.TelephonyManager;
 import android.util.Log;
 
@@ -55,6 +56,8 @@ public class SignalInfo {
         public String displayName = "--";
         public String mccMnc = "--";
         public String roaming = "--";
+        public boolean activeData = false;
+        public boolean defaultData = false;
     }
 
     public static class Snapshot {
@@ -108,6 +111,8 @@ public class SignalInfo {
         public int nrVops = -1;               // -1 未知
         public int lteVops = -1;
         // —— 列表 ——
+        public int activeDataSubId = SubscriptionManager.INVALID_SUBSCRIPTION_ID;
+        public int defaultDataSubId = SubscriptionManager.INVALID_SUBSCRIPTION_ID;
         public List<SimCard> sims = new ArrayList<>();
         public List<Cell> neighbors = new ArrayList<>();
 
@@ -151,10 +156,30 @@ public class SignalInfo {
     }
 
     public static Snapshot capture(Context ctx) {
+        return capture(ctx, SubscriptionManager.INVALID_SUBSCRIPTION_ID);
+    }
+
+    public static Snapshot capture(Context ctx, int observedActiveDataSubId) {
         Snapshot s = new Snapshot();
         try {
-            TelephonyManager tm = (TelephonyManager) ctx.getSystemService(Context.TELEPHONY_SERVICE);
-            if (tm == null) return s;
+            TelephonyManager baseTm = (TelephonyManager) ctx.getSystemService(Context.TELEPHONY_SERVICE);
+            if (baseTm == null) return s;
+
+            // Main radio view follows the subscription that is actually carrying cellular data.
+            // Fall back to the configured default data subscription, then to the base manager.
+            int defaultDataSubId = SubscriptionManager.getDefaultDataSubscriptionId();
+            int activeDataSubId = observedActiveDataSubId;
+            if (!SubscriptionManager.isValidSubscriptionId(activeDataSubId)) {
+                activeDataSubId = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                        ? SubscriptionManager.getActiveDataSubscriptionId()
+                        : defaultDataSubId;
+            }
+            s.activeDataSubId = activeDataSubId;
+            s.defaultDataSubId = defaultDataSubId;
+            int boundSubId = SubscriptionManager.isValidSubscriptionId(activeDataSubId)
+                    ? activeDataSubId : defaultDataSubId;
+            TelephonyManager tm = SubscriptionManager.isValidSubscriptionId(boundSubId)
+                    ? baseTm.createForSubscriptionId(boundSubId) : baseTm;
 
             // —— 运营商 / SIM ——
             try {
@@ -280,6 +305,8 @@ public class SignalInfo {
                         sc.displayName = String.valueOf(si.getDisplayName() == null ? "--" : si.getDisplayName());
                         sc.mccMnc = nz(si.getMccString()) + "/" + nz(si.getMncString());
                         sc.roaming = si.getDataRoaming() == 1 ? "漫游" : "未漫游";
+                        sc.activeData = si.getSubscriptionId() == s.activeDataSubId;
+                        sc.defaultData = si.getSubscriptionId() == s.defaultDataSubId;
                         s.sims.add(sc);
                     }
                 }

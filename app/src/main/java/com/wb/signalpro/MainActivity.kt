@@ -7,6 +7,11 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
+import android.os.Build
+import android.telephony.PhoneStateListener
+import android.telephony.SubscriptionManager
+import android.telephony.TelephonyCallback
+import android.telephony.TelephonyManager
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
@@ -21,6 +26,17 @@ class MainActivity : Activity() {
     private lateinit var content: LinearLayout
     private lateinit var shizukuStatus: TextView
     private var running = false
+    private var telephonyManager: TelephonyManager? = null
+    private var subscriptionManager: SubscriptionManager? = null
+    private var observedActiveDataSubId = SubscriptionManager.INVALID_SUBSCRIPTION_ID
+    private var activeDataCallback: TelephonyCallback? = null
+    private var legacyDataListener: PhoneStateListener? = null
+
+    private val subscriptionsChanged = object : SubscriptionManager.OnSubscriptionsChangedListener() {
+        override fun onSubscriptionsChanged() {
+            if (running) handler.post { render() }
+        }
+    }
 
     private val refresh = object : Runnable {
         override fun run() {
@@ -82,20 +98,76 @@ class MainActivity : Activity() {
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         setContentView(root)
 
+        telephonyManager = getSystemService(TelephonyManager::class.java)
+        subscriptionManager = getSystemService(SubscriptionManager::class.java)
+        observedActiveDataSubId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            SubscriptionManager.getActiveDataSubscriptionId()
+        } else {
+            SubscriptionManager.getDefaultDataSubscriptionId()
+        }
         requestRuntimePermissions()
     }
 
     override fun onResume() {
         super.onResume()
         running = true
+        registerSubscriptionListeners()
         handler.removeCallbacks(refresh)
         handler.post(refresh)
     }
 
     override fun onPause() {
         running = false
+        unregisterSubscriptionListeners()
         handler.removeCallbacks(refresh)
         super.onPause()
+    }
+
+
+    private fun registerSubscriptionListeners() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val callback = object : TelephonyCallback(), TelephonyCallback.ActiveDataSubscriptionIdListener {
+                    override fun onActiveDataSubscriptionIdChanged(subscriptionId: Int) {
+                        observedActiveDataSubId = subscriptionId
+                        if (running) handler.post { render() }
+                    }
+                }
+                activeDataCallback = callback
+                telephonyManager?.registerTelephonyCallback(mainExecutor, callback)
+            } else {
+                @Suppress("DEPRECATION")
+                val listener = object : PhoneStateListener(mainExecutor) {
+                    override fun onActiveDataSubscriptionIdChanged(subId: Int) {
+                        observedActiveDataSubId = subId
+                        if (running) handler.post { render() }
+                    }
+                }
+                legacyDataListener = listener
+                @Suppress("DEPRECATION")
+                telephonyManager?.listen(listener, PhoneStateListener.LISTEN_ACTIVE_DATA_SUBSCRIPTION_ID_CHANGE)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                subscriptionManager?.addOnSubscriptionsChangedListener(mainExecutor, subscriptionsChanged)
+            } else {
+                @Suppress("DEPRECATION")
+                subscriptionManager?.addOnSubscriptionsChangedListener(subscriptionsChanged)
+            }
+        } catch (_: SecurityException) { }
+    }
+
+    private fun unregisterSubscriptionListeners() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                activeDataCallback?.let { telephonyManager?.unregisterTelephonyCallback(it) }
+                activeDataCallback = null
+            } else {
+                @Suppress("DEPRECATION")
+                legacyDataListener?.let { telephonyManager?.listen(it, PhoneStateListener.LISTEN_NONE) }
+                legacyDataListener = null
+            }
+            subscriptionManager?.removeOnSubscriptionsChangedListener(subscriptionsChanged)
+        } catch (_: Exception) { }
     }
 
     private fun requestRuntimePermissions() {
@@ -108,7 +180,7 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
-        val radio = SignalInfo.capture(this)
+        val radio = SignalInfo.capture(this, observedActiveDataSubId)
         val network = NetworkSnapshot.capture(this)
         content.removeAllViews()
 
@@ -132,6 +204,8 @@ class MainActivity : Activity() {
                 .joinToString(" · ")
                 .ifBlank { "蜂窝信息暂不可用" }
             addView(big(radioTitle))
+            val activeSim = radio.sims.firstOrNull { it.activeData }
+            addView(kv("当前数据 SIM", activeSim?.let { "SIM ${it.slot + 1} · ${it.carrierName}" } ?: "--"))
             addView(kv("信号强度", radio.describeRsrp()))
             addView(kv("信号纯净度", radio.describeRsrq()))
             addView(kv("信号质量", radio.describeSinr()))
@@ -141,6 +215,22 @@ class MainActivity : Activity() {
             addView(kv("ARFCN / 频点", valueOrDash(radio.nrarfcn)))
             addView(kv("MCC/MNC", radio.mccMnc))
             addView(note(radioPlainLanguage(radio)))
+        })
+
+        content.addView(section("SIM 状态"))
+        content.addView(card().apply {
+            if (radio.sims.isEmpty()) {
+                addView(note("系统没有返回活动 SIM。"))
+            } else {
+                radio.sims.sortedBy { it.slot }.forEach { sim ->
+                    val badges = buildList {
+                        if (sim.activeData) add("当前数据")
+                        if (sim.defaultData && !sim.activeData) add("默认数据")
+                    }.joinToString(" · ")
+                    val suffix = if (badges.isBlank()) "" else "  [$badges]"
+                    addView(row("SIM ${sim.slot + 1} · ${sim.carrierName} · ${sim.mccMnc}$suffix"))
+                }
+            }
         })
 
         content.addView(section("手机当前还能看到的网络"))
