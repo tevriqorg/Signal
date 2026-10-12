@@ -287,7 +287,7 @@ class CmcloudViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun traceEos(client: CmcloudClient, host: String, stageId: Int) = coroutineScope {
         updateStage(stageId, "手机侧路径分析", "traceroute → $host", 4, active = true)
         val hops = sortedMapOf<Int, HopStatus>()
-        val intel = mutableMapOf<Int, Pair<String, String>>()
+        val intel = mutableMapOf<Pair<Int, String>, String>()
         val requested = mutableSetOf<Pair<Int, String>>()
         val jobs = mutableListOf<Job>()
         val gate = Semaphore(4)
@@ -295,16 +295,15 @@ class CmcloudViewModel(app: Application) : AndroidViewModel(app) {
             SimpleTracer(host = host, timeout = 2500, maxHops = 30, probesPerHop = 2).trace().collect { hop ->
                 hops[hop.num] = hop
                 _ui.value = _ui.value.copy(traceLines = formatHops(hops.values.toList(), intel))
-                val ip = hop.ips.firstOrNull()
-                val key = ip?.let { hop.num to it }
-                if (ip != null && !privateLike(ip) && key != null && requested.add(key)) {
-                    jobs += launch {
-                        val label = gate.withPermit {
-                            val info = withContext(Dispatchers.IO) { runCatching { client.nodeInfo(ip) }.getOrNull() }
-                            formatNodeInfo(info)
-                        }
-                        if (hops[hop.num]?.ips?.firstOrNull() == ip) {
-                            intel[hop.num] = ip to label
+                hop.ips.filterNot { privateLike(it) }.distinct().forEach { ip ->
+                    val key = hop.num to ip
+                    if (requested.add(key)) {
+                        jobs += launch {
+                            val label = gate.withPermit {
+                                val info = withContext(Dispatchers.IO) { runCatching { client.nodeInfo(ip) }.getOrNull() }
+                                formatNodeInfo(info)
+                            }
+                            intel[key] = label
                             _ui.value = _ui.value.copy(traceLines = formatHops(hops.values.toList(), intel))
                         }
                     }
@@ -312,23 +311,27 @@ class CmcloudViewModel(app: Application) : AndroidViewModel(app) {
                 updateStage(stageId, "手机侧路径分析", if (hop.isLast) "已到达 $host · ${hop.num} 跳" else "正在测第 ${hop.num} 跳", if (hop.isLast) 100 else minOf(95, hop.num * 4), active = !hop.isLast)
             }
             jobs.joinAll()
+            _ui.value = _ui.value.copy(traceLines = formatHops(hops.values.toList(), intel))
             completeStage(stageId, "手机侧路径分析完成", "记录 ${hops.size} 个 hop · ASN/运营商/位置识别已完成")
         } catch (t: Throwable) { completeStage(stageId, "路径分析已结束", "部分节点不响应：${shortError(t)}") }
     }
 
-    private fun formatHops(hops: List<HopStatus>, intel: Map<Int, Pair<String, String>>) = hops.map { hop ->
+    private fun formatHops(hops: List<HopStatus>, intel: Map<Pair<Int, String>, String>) = hops.map { hop ->
         val ips = if (hop.ips.isEmpty()) listOf("*") else hop.ips.toList()
         val primary = hop.ips.firstOrNull()
         val times = hop.probes.mapNotNull { (it as? Response.Success)?.timeUsec }
         val delay = if (times.isEmpty()) "超时" else String.format(Locale.US, "%.1f ms", times.average() / 1000.0)
-        val identified = primary?.let { ip -> intel[hop.num]?.takeIf { it.first == ip }?.second }
+        val identified = hop.ips.firstNotNullOfOrNull { ip -> intel[hop.num to ip] }
+        val hasPendingPublic = hop.ips.any { ip -> !privateLike(ip) && !intel.containsKey(hop.num to ip) }
         val role = when {
             primary == null -> "未收到这一跳的 ICMP 回复"
-            privateLike(primary) -> "◇ 接入 / 运营商内部（推断）"
+            hop.ips.all { privateLike(it) } -> "◇ 接入 / 运营商内部（推断）"
             identified != null && hop.isLast -> "● 目标 CMCloud EOS · $identified"
             identified != null -> identified
-            hop.isLast -> "● 目标 CMCloud EOS · 正在识别 ASN、运营商和位置…"
-            else -> "正在识别 ASN、运营商和位置…"
+            hasPendingPublic && hop.isLast -> "● 目标 CMCloud EOS · 正在识别 ASN、运营商和位置…"
+            hasPendingPublic -> "正在识别 ASN、运营商和位置…"
+            hop.isLast -> "● 目标 CMCloud EOS · ◇ 节点已响应 · 数据库未识别"
+            else -> "◇ 节点已响应 · 数据库未识别"
         }
         "${hop.num}. ${ips.joinToString(" / ")} · $delay · $role"
     }
@@ -340,7 +343,20 @@ class CmcloudViewModel(app: Application) : AndroidViewModel(app) {
         return listOf(identity.takeIf { it.isNotBlank() }?.let { "◆ $it" }, place.takeIf { it.isNotBlank() }?.let { "位置数据库：$it" }).filterNotNull().joinToString(" · ").ifBlank { "◇ 节点已响应 · 数据库未识别" }
     }
 
-    private fun privateLike(ip: String) = runCatching { InetAddress.getByName(ip).let { it.isSiteLocalAddress || it.isLinkLocalAddress || it.isLoopbackAddress } }.getOrDefault(false)
+    private fun privateLike(ip: String): Boolean {
+        val a = runCatching { InetAddress.getByName(ip) }.getOrNull() ?: return true
+        if (a.isSiteLocalAddress || a.isLinkLocalAddress || a.isLoopbackAddress || a.isAnyLocalAddress || a.isMulticastAddress) return true
+        val p = ip.split('.').mapNotNull { it.toIntOrNull() }
+        if (p.size == 4) {
+            val x = p[0]; val y = p[1]
+            if (x == 100 && y in 64..127) return true
+            if (x == 198 && y in 18..19) return true
+            if (x == 192 && y == 0) return true
+            if (x == 198 && y == 51 && p.getOrNull(2) == 100) return true
+            if (x == 203 && y == 0 && p.getOrNull(2) == 113) return true
+        }
+        return false
+    }
     private fun ensureRunning() { if (stopRequested.get()) throw CancellationException("user stopped") }
     private fun updateTransferStage(id: Int, title: String, job: CmcloudClient.RemoteJob) = updateStage(
         id, title, "实时传输", pct(job.progressBytes, job.totalBytes), active = true,
