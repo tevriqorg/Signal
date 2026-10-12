@@ -27,6 +27,7 @@ class WoPanClient(private val baseUrl: String) {
     fun cancelRemoteJob(id: String) = parseJob(JsonHttp.requestJson("POST", api("/api/signal/jobs/$id/cancel"), JSONObject()))
     fun startVerifyDownload(fid: String, sha256: String, trash: Boolean = true) = parseJob(JsonHttp.requestJson("POST", api("/api/signal/jobs/verify-download/${encodePath(fid)}"), JSONObject().put("expected_sha256", sha256).put("trash", trash)))
     fun delete(fid: String) { JsonHttp.requestJson("POST", api("/api/signal/delete/${encodePath(fid)}"), JSONObject()) }
+    fun reportResult(payload: JSONObject) { JsonHttp.requestJson("POST", api("/api/signal/results"), payload, timeoutMs = 10_000) }
     fun prepared(job: RemoteJob): Prepared {
         val r = job.result ?: error("Tokyo job returned no result")
         return Prepared(r.optString("fid", r.optString("file_id", r.optString("unique_id"))), r.getLong("size"), r.getString("sha256"), r.optString("name", r.optString("file_name")), r.optBoolean("cached"), r.optString("host"))
@@ -95,14 +96,27 @@ class WoPanClient(private val baseUrl: String) {
                     "channel" to channel, "directoryId" to directoryId, "fileInfo" to fileInfo,
                     "partSize" to length.toString(), "partIndex" to (part + 1).toString()
                 )
-                val response = multipartPart(uploadUrl, fields, file, length, fileName, shouldCancel) { partBytes ->
-                    val done = offset + partBytes; val now = System.nanoTime()
-                    if (now - lastAt >= 200_000_000L || done == size) {
-                        onProgress(progress(done, size, started, lastBytes, lastAt, now)); lastBytes = done; lastAt = now
+                var response: JSONObject? = null
+                var lastError = ""
+                for (attempt in 1..4) {
+                    if (shouldCancel()) throw CancellationException("transfer cancelled")
+                    file.seek(offset)
+                    try {
+                        val r = multipartPart(uploadUrl, fields, file, length, fileName, shouldCancel) { partBytes ->
+                            val done = offset + partBytes; val now = System.nanoTime()
+                            if (now - lastAt >= 200_000_000L || done == size) {
+                                onProgress(progress(done, size, started, lastBytes, lastAt, now)); lastBytes = done; lastAt = now
+                            }
+                        }
+                        if (r.optString("code") == "0000") { response = r; break }
+                        lastError = "code=${r.optString("code")} msg=${r.optString("msg", r.optString("message"))}".take(180)
+                    } catch (t: Throwable) {
+                        lastError = (t.message ?: t.javaClass.simpleName).replace('\n', ' ').take(180)
                     }
+                    if (attempt < 4) Thread.sleep(800L shl (attempt - 1))
                 }
-                if (response.optString("code") != "0000") error("WoPan upload2C returned failure")
-                response.optJSONObject("data")?.optString("fid")?.takeIf { it.isNotBlank() }?.let { providerFid = it }
+                val ok = response ?: error("WoPan part ${part + 1}/$partCount failed after 4 attempts: $lastError")
+                ok.optJSONObject("data")?.optString("fid")?.takeIf { it.isNotBlank() }?.let { providerFid = it }
             }
         }
         if (providerFid.isBlank()) error("WoPan did not return fid")

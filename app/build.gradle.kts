@@ -20,8 +20,8 @@ android {
         applicationId = "com.wb.signalpro"
         minSdk = 29
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.2.0-alpha.7"
+        versionCode = 9
+        versionName = "0.2.0-alpha.8"
     }
 
     signingConfigs {
