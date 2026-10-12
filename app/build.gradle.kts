@@ -20,8 +20,8 @@ android {
         applicationId = "com.wb.signalpro"
         minSdk = 29
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.2.0-alpha.5"
+        versionCode = 7
+        versionName = "0.2.0-alpha.6"
     }
 
     signingConfigs {
@@ -50,6 +50,10 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    packaging {
+        jniLibs.useLegacyPackaging = true
     }
 
     compileOptions {

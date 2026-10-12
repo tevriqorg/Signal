@@ -90,7 +90,14 @@ class MainActivity : Activity() {
         }
         actionRow.addView(diag, LinearLayout.LayoutParams(0, -2, 1f))
         actionRow.addView(cmcloud, LinearLayout.LayoutParams(0, -2, 1f))
-        root.addView(actionRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
+        root.addView(actionRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
+
+        val speed = Button(this).apply {
+            text = "网络测速 / iPerf3"
+            isAllCaps = false
+            setOnClickListener { startActivity(Intent(this@MainActivity, SpeedTestActivity::class.java)) }
+        }
+        root.addView(speed, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
 
         val scroll = ScrollView(this)
         content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
