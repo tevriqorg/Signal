@@ -152,7 +152,11 @@ class WoPanViewModel(app: Application) : AndroidViewModel(app) {
     private fun baseResult(status: String) = org.json.JSONObject()
         .put("run_id", currentRunId.orEmpty()).put("direction", currentDirection.orEmpty()).put("status", status)
         .put("started_at_ms", currentStartedAtMs).put("finished_at_ms", System.currentTimeMillis())
-        .put("app_version", BuildConfig.VERSION_NAME).put("network", networkSnapshot())
+        .put("app_version", currentAppVersion()).put("network", networkSnapshot())
+
+    private fun currentAppVersion(): String = runCatching {
+        getApplication<Application>().packageManager.getPackageInfo(getApplication<Application>().packageName, 0).versionName ?: ""
+    }.getOrDefault("")
 
     private fun networkSnapshot(): org.json.JSONObject {
         val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
