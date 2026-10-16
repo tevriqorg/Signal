@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build:
-    name: Unit test + build release APK
+    name: Build release APK
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -37,20 +37,6 @@ jobs:
         uses: gradle/actions/setup-gradle@v5
         with:
           gradle-version: '9.6.0'
-
-      - name: Run JVM unit tests
-        run: |
-          set -o pipefail
-          gradle :app:testReleaseUnitTest --stacktrace 2>&1 | tee gradle-unit.log
-
-      - name: Upload JVM test log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: g1-unit-log-${{ github.sha }}
-          path: gradle-unit.log
-          if-no-files-found: warn
-          retention-days: 7
 
       - name: Build unsigned release APK
         run: gradle :app:assembleRelease --stacktrace
@@ -89,7 +75,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Run MediaStore instrumentation POC
+      - name: Run MediaStore + reconcile policy instrumentation
         uses: ReactiveCircus/android-emulator-runner@v2
         with:
           api-level: 35
