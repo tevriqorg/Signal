@@ -39,7 +39,18 @@ jobs:
           gradle-version: '9.6.0'
 
       - name: Run JVM unit tests
-        run: gradle :app:testReleaseUnitTest --stacktrace
+        run: |
+          set -o pipefail
+          gradle :app:testReleaseUnitTest --stacktrace 2>&1 | tee gradle-unit.log
+
+      - name: Upload JVM test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g1-unit-log-${{ github.sha }}
+          path: gradle-unit.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Build unsigned release APK
         run: gradle :app:assembleRelease --stacktrace
@@ -86,4 +97,13 @@ jobs:
           target: google_apis
           profile: pixel_6
           disable-animations: true
-          script: gradle :app:connectedDebugAndroidTest --stacktrace
+          script: bash -lc 'set -o pipefail; gradle :app:connectedDebugAndroidTest --stacktrace 2>&1 | tee gradle-instrumentation.log'
+
+      - name: Upload MediaStore POC log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g1-media-poc-log-${{ github.sha }}
+          path: gradle-instrumentation.log
+          if-no-files-found: warn
+          retention-days: 7
