@@ -41,7 +41,7 @@ enum class MediaType {
 
 /**
  * Stable local media identity/metadata boundary.
- * MediaStore indexing and semantic analysis are intentionally deferred to G1+.
+ * Semantic analysis remains outside this record.
  */
 data class MediaItem(
     val id: MediaId,
@@ -56,12 +56,10 @@ data class MediaItem(
     val height: Int?,
     val durationMs: Long?,
     val relativePath: String?,
+    val displayName: String? = null,
 )
 
-/**
- * Generic event envelope. Sensitive/raw payloads remain behind payloadRef instead
- * of being embedded in the cross-feature envelope.
- */
+/** Generic event envelope; raw/sensitive payloads live behind payloadRef. */
 data class SignalEvent(
     val id: EventId,
     val type: String,

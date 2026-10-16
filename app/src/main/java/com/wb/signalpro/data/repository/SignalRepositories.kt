@@ -14,6 +14,8 @@ interface MediaRepository {
 
     suspend fun get(ids: Collection<MediaId>): List<MediaItem>
 
+    suspend fun list(limit: Int = 2_000, offset: Int = 0): List<MediaItem>
+
     suspend fun upsert(items: Collection<MediaItem>)
 }
 
@@ -35,10 +37,7 @@ interface ContextRepository {
     suspend fun upsert(contextStates: Collection<ContextState>)
 }
 
-/**
- * Persistence boundary exposed to higher layers. G0 deliberately leaves concrete
- * Room/SQLite/MediaStore implementations unspecified.
- */
+/** Persistence boundary exposed to higher layers. */
 interface SignalDataStore {
     val media: MediaRepository
     val events: EventRepository
