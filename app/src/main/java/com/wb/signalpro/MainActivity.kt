@@ -73,6 +73,13 @@ class MainActivity : Activity() {
         }
         root.addView(shizukuStatus)
 
+        val photos = Button(this).apply {
+            text = "Photos / 本机相册"
+            isAllCaps = false
+            setOnClickListener { startActivity(Intent(this@MainActivity, GalleryActivity::class.java)) }
+        }
+        root.addView(photos, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+
         val actionRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val diag = Button(this).apply {
             text = "Ping / 路由跟踪"
@@ -136,7 +143,6 @@ class MainActivity : Activity() {
         handler.removeCallbacks(refresh)
         super.onPause()
     }
-
 
     private fun registerSubscriptionListeners() {
         try {
