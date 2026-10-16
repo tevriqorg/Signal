@@ -39,7 +39,18 @@ jobs:
           gradle-version: '9.6.0'
 
       - name: Build unsigned release APK
-        run: gradle :app:assembleRelease --stacktrace
+        run: |
+          set -o pipefail
+          gradle :app:assembleRelease --stacktrace 2>&1 | tee gradle-build.log
+
+      - name: Upload release build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g1-build-log-${{ github.sha }}
+          path: gradle-build.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload unsigned APK for private signing
         uses: actions/upload-artifact@v4
