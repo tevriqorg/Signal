@@ -1,6 +1,7 @@
 package com.wb.signalpro.photos
 
 import android.Manifest
+import android.content.ContentUris
 import android.content.ContentValues
 import android.graphics.Bitmap
 import android.os.Build
@@ -27,19 +28,21 @@ class MediaIndexInstrumentedTest {
         context.deleteDatabase("signal-media.db")
 
         val firstUri = createImage(context, "signal_g1_${UUID.randomUUID()}.png")
+        val firstId = ContentUris.parseId(firstUri)
         var secondUri: android.net.Uri? = null
         try {
             val firstCoordinator = MediaIndexCoordinator(context)
             val fullReport = firstCoordinator.reconcile(forceFull = true)
             assertEquals(MediaAccessLevel.FULL, fullReport.accessLevel)
-            assertTrue(firstCoordinator.indexedMedia().any { it.contentUri == firstUri.toString() })
+            assertTrue(firstCoordinator.indexedMedia().any { it.mediaStoreId == firstId })
             firstCoordinator.close()
 
             secondUri = createImage(context, "signal_g1_${UUID.randomUUID()}.png")
+            val secondId = ContentUris.parseId(secondUri)
             val restartedCoordinator = MediaIndexCoordinator(context)
             val catchup = restartedCoordinator.reconcile(forceFull = false)
             assertTrue(catchup.modes.values.any { it == ReconcileMode.INCREMENTAL || it == ReconcileMode.FULL })
-            assertTrue(restartedCoordinator.indexedMedia().any { it.contentUri == secondUri.toString() })
+            assertTrue(restartedCoordinator.indexedMedia().any { it.mediaStoreId == secondId })
             restartedCoordinator.close()
         } finally {
             context.contentResolver.delete(firstUri, null, null)
