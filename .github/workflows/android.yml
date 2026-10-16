@@ -96,11 +96,14 @@ jobs:
           disable-animations: true
           script: bash -lc 'set -o pipefail; gradle :app:connectedDebugAndroidTest --stacktrace 2>&1 | tee gradle-instrumentation.log'
 
-      - name: Upload MediaStore POC log
+      - name: Upload MediaStore POC evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: g1-media-poc-log-${{ github.sha }}
-          path: gradle-instrumentation.log
+          name: g1-media-poc-evidence-${{ github.sha }}
+          path: |
+            gradle-instrumentation.log
+            app/build/outputs/androidTest-results/connected/**
+            app/build/reports/androidTests/connected/**
           if-no-files-found: warn
           retention-days: 7
