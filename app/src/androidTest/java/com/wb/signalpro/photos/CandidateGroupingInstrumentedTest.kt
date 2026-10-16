@@ -14,9 +14,9 @@ class CandidateGroupingInstrumentedTest {
     @Test
     fun sameInputAlwaysProducesSameGroupsWithoutReordering() {
         val input = listOf(
-            media("a", 300, MediaType.PHOTO, "DCIM/Camera"),
-            media("b", 260, MediaType.PHOTO, "DCIM/Camera"),
-            media("c", 200, MediaType.SCREENSHOT, "Pictures/Screenshots"),
+            media("a", 300 * MINUTE, MediaType.PHOTO, "DCIM/Camera"),
+            media("b", 260 * MINUTE, MediaType.PHOTO, "DCIM/Camera"),
+            media("c", 200 * MINUTE, MediaType.SCREENSHOT, "Pictures/Screenshots"),
         )
         val first = CandidateGroupSegmenter.segment(input)
         val second = CandidateGroupSegmenter.segment(input)
@@ -28,8 +28,8 @@ class CandidateGroupingInstrumentedTest {
     @Test
     fun hardTimeGapSplits() {
         val input = listOf(
-            media("a", 10_000, MediaType.PHOTO, "DCIM/Camera"),
-            media("b", 10_000 - 91 * MINUTE, MediaType.PHOTO, "DCIM/Camera"),
+            media("a", 200 * MINUTE, MediaType.PHOTO, "DCIM/Camera"),
+            media("b", 109 * MINUTE, MediaType.PHOTO, "DCIM/Camera"),
         )
         val groups = CandidateGroupSegmenter.segment(input)
         assertEquals(2, groups.size)
@@ -39,9 +39,9 @@ class CandidateGroupingInstrumentedTest {
     @Test
     fun shortScreenshotRunStaysTogether() {
         val input = listOf(
-            media("a", 20_000, MediaType.SCREENSHOT, "Pictures/Screenshots"),
-            media("b", 20_000 - 2 * MINUTE, MediaType.SCREENSHOT, "Pictures/Screenshots"),
-            media("c", 20_000 - 4 * MINUTE, MediaType.SCREENSHOT, "Pictures/Screenshots"),
+            media("a", 200 * MINUTE, MediaType.SCREENSHOT, "Pictures/Screenshots"),
+            media("b", 198 * MINUTE, MediaType.SCREENSHOT, "Pictures/Screenshots"),
+            media("c", 196 * MINUTE, MediaType.SCREENSHOT, "Pictures/Screenshots"),
         )
         assertEquals(1, CandidateGroupSegmenter.segment(input).size)
     }
@@ -49,8 +49,8 @@ class CandidateGroupingInstrumentedTest {
     @Test
     fun meaningfulScreenshotCameraTransitionSplits() {
         val input = listOf(
-            media("a", 20_000, MediaType.SCREENSHOT, "Pictures/Screenshots"),
-            media("b", 20_000 - 11 * MINUTE, MediaType.PHOTO, "DCIM/Camera"),
+            media("a", 200 * MINUTE, MediaType.SCREENSHOT, "Pictures/Screenshots"),
+            media("b", 189 * MINUTE, MediaType.PHOTO, "DCIM/Camera"),
         )
         val groups = CandidateGroupSegmenter.segment(input)
         assertEquals(2, groups.size)
@@ -60,27 +60,27 @@ class CandidateGroupingInstrumentedTest {
     @Test
     fun bucketChangeRequiresTemporalSupport() {
         val close = listOf(
-            media("a", 40_000, MediaType.PHOTO, "DCIM/Camera"),
-            media("b", 40_000 - 5 * MINUTE, MediaType.PHOTO, "Pictures/Other"),
+            media("a", 200 * MINUTE, MediaType.PHOTO, "DCIM/Camera"),
+            media("b", 195 * MINUTE, MediaType.PHOTO, "Pictures/Other"),
         )
         assertEquals(1, CandidateGroupSegmenter.segment(close).size)
 
         val apart = listOf(
-            media("a", 40_000, MediaType.PHOTO, "DCIM/Camera"),
-            media("b", 40_000 - 31 * MINUTE, MediaType.PHOTO, "Pictures/Other"),
+            media("a", 200 * MINUTE, MediaType.PHOTO, "DCIM/Camera"),
+            media("b", 169 * MINUTE, MediaType.PHOTO, "Pictures/Other"),
         )
         val groups = CandidateGroupSegmenter.segment(apart)
         assertEquals(2, groups.size)
         assertEquals(CandidateBoundaryReason.BUCKET_TRANSITION, groups[1].boundaryReason)
     }
 
-    private fun media(id: String, minutes: Long, type: MediaType, path: String): MediaItem = MediaItem(
+    private fun media(id: String, epochMs: Long, type: MediaType, path: String): MediaItem = MediaItem(
         id = MediaId(id),
         mediaStoreId = id.hashCode().toLong(),
         contentUri = "content://test/$id",
         mediaType = type,
-        capturedAtEpochMs = minutes * MINUTE,
-        addedAtEpochMs = minutes * MINUTE,
+        capturedAtEpochMs = epochMs,
+        addedAtEpochMs = epochMs,
         modifiedGeneration = 1,
         mimeType = if (type == MediaType.VIDEO) "video/mp4" else "image/jpeg",
         width = 100,
