@@ -7,6 +7,10 @@
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 
     <application
@@ -27,21 +31,11 @@
             android:exported="true"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
-        <activity
-            android:name=".SpeedTestActivity"
-            android:exported="false" />
-
-        <activity
-            android:name=".DiagnosticsActivity"
-            android:exported="false" />
-
-        <activity
-            android:name=".CmcloudTestActivity"
-            android:exported="false" />
-
-        <activity
-            android:name=".WoPanTestActivity"
-            android:exported="false" />
+        <activity android:name=".GalleryActivity" android:exported="false" />
+        <activity android:name=".SpeedTestActivity" android:exported="false" />
+        <activity android:name=".DiagnosticsActivity" android:exported="false" />
+        <activity android:name=".CmcloudTestActivity" android:exported="false" />
+        <activity android:name=".WoPanTestActivity" android:exported="false" />
 
         <activity
             android:name=".MainActivity"
