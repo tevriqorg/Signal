@@ -36,7 +36,7 @@ internal class MediaStoreSource(private val context: Context) {
     }
 
     fun query(volumeName: String, afterGeneration: Long?): List<ScannedMedia> {
-        val uri = MediaStore.Files.getContentUri(volumeName)
+        val filesUri = MediaStore.Files.getContentUri(volumeName)
         val generationColumn = if (Build.VERSION.SDK_INT >= 30) {
             MediaStore.MediaColumns.GENERATION_MODIFIED
         } else {
@@ -70,7 +70,7 @@ internal class MediaStoreSource(private val context: Context) {
         val orderBy = "$generationColumn ASC"
 
         val result = mutableListOf<ScannedMedia>()
-        resolver.query(uri, projection, selection, selectionArgs, orderBy)?.use { cursor ->
+        resolver.query(filesUri, projection, selection, selectionArgs, orderBy)?.use { cursor ->
             val idIndex = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
             val mediaTypeIndex = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MEDIA_TYPE)
             val mimeIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
@@ -95,10 +95,15 @@ internal class MediaStoreSource(private val context: Context) {
                     MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO -> MediaType.VIDEO
                     else -> MediaType.UNKNOWN
                 }
+                val itemCollection = when (mediaKind) {
+                    MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE -> MediaStore.Images.Media.getContentUri(volumeName)
+                    MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO -> MediaStore.Video.Media.getContentUri(volumeName)
+                    else -> filesUri
+                }
                 val addedSeconds = cursor.getLong(addedIndex)
                 val captured = cursor.getLong(takenIndex).takeIf { it > 0L }
                     ?: addedSeconds.takeIf { it > 0L }?.times(1_000L)
-                val contentUri = ContentUris.withAppendedId(uri, id).toString()
+                val contentUri = ContentUris.withAppendedId(itemCollection, id).toString()
                 result += ScannedMedia(
                     volumeName = volumeName,
                     item = MediaItem(
