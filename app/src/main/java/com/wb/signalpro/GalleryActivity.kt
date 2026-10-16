@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material3.Button
@@ -40,6 +41,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import com.wb.signalpro.data.model.MediaItem
 import com.wb.signalpro.data.model.MediaType
+import com.wb.signalpro.photos.CandidateBoundaryReason
+import com.wb.signalpro.photos.CandidateGroup
+import com.wb.signalpro.photos.CandidateGroupSegmenter
 import com.wb.signalpro.photos.MediaAccessLevel
 import com.wb.signalpro.photos.MediaChangeObserver
 import com.wb.signalpro.photos.MediaIndexCoordinator
@@ -149,11 +153,13 @@ private fun GalleryScreen(
     onRefresh: () -> Unit,
 ) {
     var filter by remember { mutableStateOf(GalleryFilter.PHOTOS) }
+    var groupedView by remember { mutableStateOf(true) }
     val visible = when (filter) {
         GalleryFilter.PHOTOS -> state.items.filter { it.mediaType == MediaType.PHOTO || it.mediaType == MediaType.SCREENSHOT }
         GalleryFilter.VIDEOS -> state.items.filter { it.mediaType == MediaType.VIDEO }
         GalleryFilter.SCREENSHOTS -> state.items.filter { it.mediaType == MediaType.SCREENSHOT }
     }
+    val groups = remember(visible) { CandidateGroupSegmenter.segment(visible) }
 
     Surface(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 12.dp)) {
@@ -175,12 +181,19 @@ private fun GalleryScreen(
             }
 
             Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 FilterChip(selected = filter == GalleryFilter.PHOTOS, onClick = { filter = GalleryFilter.PHOTOS }, label = { Text("照片") })
                 FilterChip(selected = filter == GalleryFilter.VIDEOS, onClick = { filter = GalleryFilter.VIDEOS }, label = { Text("视频") })
                 FilterChip(selected = filter == GalleryFilter.SCREENSHOTS, onClick = { filter = GalleryFilter.SCREENSHOTS }, label = { Text("截图") })
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(selected = groupedView, onClick = { groupedView = true }, label = { Text("候选分组") })
+                FilterChip(selected = !groupedView, onClick = { groupedView = false }, label = { Text("原始时间轴") })
             }
 
             if (state.syncing && state.items.isEmpty()) {
@@ -203,9 +216,37 @@ private fun GalleryScreen(
                     horizontalArrangement = Arrangement.spacedBy(3.dp),
                     verticalArrangement = Arrangement.spacedBy(3.dp),
                 ) {
-                    items(visible, key = { it.id.value }) { item -> MediaTile(item) }
+                    if (groupedView) {
+                        groups.forEach { group ->
+                            item(
+                                key = "header:${group.id}",
+                                span = { GridItemSpan(3) },
+                            ) {
+                                CandidateHeader(group)
+                            }
+                            items(group.items, key = { it.id.value }) { item -> MediaTile(item) }
+                        }
+                    } else {
+                        items(visible, key = { it.id.value }) { item -> MediaTile(item) }
+                    }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun CandidateHeader(group: CandidateGroup) {
+    val reason = when (group.boundaryReason) {
+        CandidateBoundaryReason.START -> "时间轴起点"
+        CandidateBoundaryReason.TIME_GAP -> "较长时间间隔"
+        CandidateBoundaryReason.SCREENSHOT_CAMERA_TRANSITION -> "截图 / 相机切换"
+        CandidateBoundaryReason.BUCKET_TRANSITION -> "相册目录变化"
+    }
+    Card(modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 3.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
+            Text("候选事件 · ${group.items.size} 项", style = MaterialTheme.typography.titleSmall)
+            Text(reason, style = MaterialTheme.typography.bodySmall)
         }
     }
 }
