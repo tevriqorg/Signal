@@ -343,14 +343,38 @@ def make_handler(service: MediaService):
             self.end_headers()
             self.wfile.write(data)
 
-        def bytes_reply(self, data: bytes, mime: str):
-            self.send_response(200)
+        def file_reply(self, path: Path, mime: str):
+            size = path.stat().st_size
+            start = 0
+            requested = self.headers.get("Range", "")
+            if requested:
+                match = re.fullmatch(r"bytes=(\d+)-", requested)
+                if match is None:
+                    raise ApiError(400, "unsupported range")
+                start = int(match.group(1))
+                if start >= size:
+                    raise ApiError(416, "range beyond end of file")
+            remaining = size - start
+            self.send_response(206 if requested else 200)
             self.send_header("Content-Type", mime)
-            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Content-Length", str(remaining))
+            self.send_header("Accept-Ranges", "bytes")
+            if requested:
+                self.send_header("Content-Range", f"bytes {start}-{size - 1}/{size}")
             self.send_header("Cache-Control", "private, max-age=120")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
-            self.wfile.write(data)
+            try:
+                with path.open("rb") as handle:
+                    handle.seek(start)
+                    while remaining > 0:
+                        data = handle.read(min(128 * 1024, remaining))
+                        if not data:
+                            break
+                        self.wfile.write(data)
+                        remaining -= len(data)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
         def body(self, limit):
             try:
@@ -401,7 +425,7 @@ def make_handler(service: MediaService):
                 path, mime = service.content(parts[2], parts[3])
                 if not path.is_file():
                     raise ApiError(500, "verified media missing")
-                return self.bytes_reply(path.read_bytes(), mime)
+                return self.file_reply(path, mime)
             if self.command == "POST" and parts == ["v1", "uploads"]:
                 return self.json_reply(200, service.start_upload(device, self.json_body()))
             if self.command == "PUT" and len(parts) == 3 and parts[:2] == ["v1", "uploads"]:
