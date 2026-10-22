@@ -132,7 +132,10 @@ class GalleryActivity : ComponentActivity() {
                     onSearch = { search(it) },
                     onLoadRemote = { loadOriginal(it) },
                     onOpenVideo = { openVideo(it) },
-                    onRemotePreview = { remote -> sync.loadPreview(remote) },
+                    onRemotePreview = { remote ->
+                        try { sync.loadPreview(remote) }
+                        finally { scope.launch { ui = ui.copy(sync = sync.snapshot(true, "缩略图状态已更新")) } }
+                    },
                 )
             }
         }
@@ -308,7 +311,6 @@ private fun GalleryScreen(
     var query by remember { mutableStateOf("") }
     var localSelected by remember { mutableStateOf<MediaItem?>(null) }
     var remoteSelected by remember { mutableStateOf<RemotePhoto?>(null) }
-    var remoteFailed by remember { mutableStateOf(setOf<String>()) }
 
     val remote = state.searchResults ?: state.sync.remote
     val tiles = remember(state.items, remote, filter) {
@@ -409,9 +411,9 @@ private fun GalleryScreen(
                         }
                         items(tiles.filterIsInstance<Tile.Remote>(), key = { it.key }) { tile ->
                             val media = tile.item
-                            RemoteCell(media, remoteBadge(media, state.sync, remoteFailed),
+                            RemoteCell(media, remoteBadge(media, state.sync, emptySet()),
                                 onRemotePreview, onClick = { remoteSelected = media; onLoadRemote(media) },
-                                onFailed = { remoteFailed = remoteFailed + media.id })
+                                retryToken = state.sync.description, onFailed = {})
                         }
                     } else {
                         // Plain native-style calendar timeline (no semantic header cards).
@@ -431,10 +433,10 @@ private fun GalleryScreen(
                                         }
                                     is Tile.Remote -> {
                                         val media = tile.item
-                                        RemoteCell(media, remoteBadge(media, state.sync, remoteFailed),
+                                        RemoteCell(media, remoteBadge(media, state.sync, emptySet()),
                                             onRemotePreview,
                                             onClick = { remoteSelected = media; onLoadRemote(media) },
-                                            onFailed = { remoteFailed = remoteFailed + media.id })
+                                            retryToken = state.sync.description, onFailed = {})
                                     }
                                 }
                             }
@@ -597,8 +599,8 @@ private fun GalleryCell(item: MediaItem, badge: GalleryTransferBadge, onClick: (
 
 @Composable
 private fun RemoteCell(media: RemotePhoto, badge: GalleryTransferBadge,
-    loadPreview: suspend (RemotePhoto) -> java.io.File, onClick: () -> Unit, onFailed: () -> Unit) {
-    val path by produceState<String?>(initialValue = null, media.id, media.thumbReady, media.revision) {
+    loadPreview: suspend (RemotePhoto) -> java.io.File, onClick: () -> Unit, retryToken: String, onFailed: () -> Unit) {
+    val path by produceState<String?>(initialValue = null, media.id, media.thumbReady, media.revision, retryToken) {
         value = runCatching { loadPreview(media).absolutePath }
             .onFailure { if (media.thumbReady) onFailed() }.getOrNull()
     }

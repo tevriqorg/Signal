@@ -79,6 +79,20 @@ class DualEmulatorInstrumentedTest {
                 assertEquals("Emulator-$peer", media.deviceName)
                 val file = client.fetchOriginal(media) { _, _ -> }
                 assertEquals(media.sha256, sha(file.readBytes()))
+                // Same-size cache corruption must be detected and repaired from the authenticated server.
+                java.io.RandomAccessFile(file, "rw").use { it.seek(0); it.write(0) }
+                assertEquals(media.sha256, sha(client.fetchOriginal(media) { _, _ -> }.readBytes()))
+                GallerySyncEngine(context).use { engine ->
+                    val wrong = media.copy(sha256 = "0".repeat(64))
+                    assertTrue(runCatching { engine.loadOriginal(wrong) { _, _ -> } }.isFailure)
+                }
+                GallerySyncEngine(context).use { engine ->
+                    assertTrue(engine.snapshot(true, "").remoteFailures.contains(media.id))
+                    engine.loadPreview(media)
+                    assertFalse("preview success cannot hide original failure", engine.snapshot(true, "").healthy)
+                    engine.loadOriginal(media) { _, _ -> }
+                    assertFalse(engine.snapshot(true, "").remoteFailures.contains(media.id))
+                }
                 GallerySyncStore(context).use { it.ingest(all(client), client.catalog(0).cursor) }
                 val activity = instrumentation.startActivitySync(Intent(context, GalleryActivity::class.java)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
