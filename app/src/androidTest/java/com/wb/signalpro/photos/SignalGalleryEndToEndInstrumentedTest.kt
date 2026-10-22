@@ -86,6 +86,8 @@ class SignalGalleryEndToEndInstrumentedTest {
         val app = context
         device.wakeUp()
         device.executeShellCommand("wm dismiss-keyguard")
+        instrumentation.uiAutomation.windows
+        device.waitForIdle()
         val activity = instrumentation.startActivitySync(Intent(app, GalleryActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         try {

@@ -73,6 +73,9 @@ class DualEmulatorInstrumentedTest {
         }
     }
     @Test fun phase(): Unit = runBlocking {
+        // Attach accessibility before opening a new window (API 35 registration race).
+        instrumentation.uiAutomation.windows
+        UiDevice.getInstance(instrumentation).waitForIdle()
         val phase = args.getString("phase") ?: error("phase required")
         when (phase) {
             "publish" -> {
