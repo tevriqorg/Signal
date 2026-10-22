@@ -209,6 +209,27 @@ class SignalServerIntegrationTest(unittest.TestCase):
         self.assertTrue(self.service.item(b)["original_ready"])
         self.assertEqual(1, len(list((Path(self.temp.name) / "objects").iterdir())))
 
+    def test_concurrent_device_uploads_do_not_lose_catalog_or_verified_bytes(self):
+        from concurrent.futures import ThreadPoolExecutor
+        def exchange(number):
+            token = self.device_a if number % 2 == 0 else self.device_b
+            media = self.make_photo(owner="a" if number % 2 == 0 else "b", key=f"concurrent-{number}")
+            payload = (f"synthetic-{number}-".encode()) * 1000
+            sha = hashlib.sha256(payload).hexdigest()
+            code, session = self.call("POST", "/v1/uploads", {"media_id": media, "size": len(payload), "sha256": sha}, token=token)
+            self.assertEqual(200, code)
+            code, complete = self.call("PUT", "/v1/uploads/" + session["upload_id"], payload, token=token, headers={"X-Offset": "0"})
+            self.assertEqual(200, code)
+            self.assertTrue(complete["complete"])
+            self.assertEqual(payload, self.call("GET", f"/v1/media/{media}/original", token=self.device_b)[1])
+            return media
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            ids = set(pool.map(exchange, range(12)))
+        code, catalog = self.call("GET", "/v1/media", token=self.device_a)
+        self.assertEqual(200, code)
+        self.assertEqual(ids, {item["media_id"] for item in catalog["items"]})
+        self.assertTrue(all(item["original_ready"] for item in catalog["items"]))
+
     def test_bad_hash_rolls_back_and_owner_only_upload(self):
         photo = self.make_photo()
         code, upload = self.call("POST", "/v1/uploads", {"media_id": photo, "size": 5, "sha256": "a"*64}, token=self.device_a)

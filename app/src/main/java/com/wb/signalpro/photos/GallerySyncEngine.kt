@@ -5,6 +5,9 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import com.wb.signalpro.data.model.MediaItem
 import com.wb.signalpro.data.model.MediaType
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -71,6 +74,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
 
     suspend fun synchronize(items: List<MediaItem>, onUpdate: (GallerySyncSnapshot) -> Unit) =
         withContext(Dispatchers.IO) {
+            val job = currentCoroutineContext()[Job]
             knownItems = items
             if (!client.paired) {
                 onUpdate(snapshot(false, "未配对 Signal Server"))
@@ -95,6 +99,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
 
             var touched = 0
             for (media in items) {
+                currentCoroutineContext().ensureActive()
                 if (cancelled || (!foreground && !allowBackgroundImages)) break
                 val old = store.local(media.id.value)
                 val version = media.toString()
@@ -117,7 +122,9 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                     val allowed = media.mediaType != MediaType.VIDEO || (foreground && fastWifi())
                     if (!allowed) continue
                     val uploaded = client.uploadOriginal(media, confirmedId,
-                        shouldContinue = { !cancelled && (foreground || (allowBackgroundImages && media.mediaType != MediaType.VIDEO)) },
+                        shouldContinue = { !cancelled && job?.isActive != false &&
+                            (foreground || (allowBackgroundImages && media.mediaType != MediaType.VIDEO)) &&
+                            (media.mediaType != MediaType.VIDEO || fastWifi()) },
                         progress = { done, total ->
                             onUpdate(snapshot(true, "正在传输原件", done, total, media.displayName ?: "照片"))
                         })
@@ -126,6 +133,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                         onUpdate(snapshot(true, "原件已通过服务端校验"))
                     }
                     touched++
+                } catch (error: kotlinx.coroutines.CancellationException) { throw error
                 } catch (error: Exception) {
                     val terminal = !isTransient(error)
                     failed = failed || terminal

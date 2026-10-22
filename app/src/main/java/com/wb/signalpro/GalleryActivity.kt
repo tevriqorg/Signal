@@ -101,6 +101,7 @@ class GalleryActivity : ComponentActivity() {
     private lateinit var coordinator: MediaIndexCoordinator
     private lateinit var sync: GallerySyncEngine
     private var observer: MediaChangeObserver? = null
+    private var networkObserver: android.net.ConnectivityManager.NetworkCallback? = null
     private val scope = MainScope()
     private var ui by mutableStateOf(GalleryUiState())
 
@@ -150,6 +151,19 @@ class GalleryActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         sync.foreground = true
+        val manager = getSystemService(android.net.ConnectivityManager::class.java)
+        networkObserver = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) {
+                runOnUiThread { if (sync.foreground) startSync(ui.items) }
+            }
+            override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) {
+                if (caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED))
+                    runOnUiThread { if (sync.foreground) startSync(ui.items) }
+            }
+            override fun onLost(network: android.net.Network) {
+                runOnUiThread { ui = ui.copy(sync = ui.sync.copy(description = "离线，等待连接恢复")) }
+            }
+        }.also { manager.registerDefaultNetworkCallback(it) }
         if (sync.client.paired) GalleryBackgroundScheduler.schedule(this)
         observer = coordinator.newObserver { refresh(false) }.also { it.register() }
     }
@@ -157,6 +171,8 @@ class GalleryActivity : ComponentActivity() {
     override fun onResume() { super.onResume(); refresh(false) }
     override fun onStop() {
         sync.foreground = false
+        networkObserver?.let { runCatching { getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(it) } }
+        networkObserver = null
         if (sync.client.paired) GalleryBackgroundScheduler.catchUp(this)
         observer?.unregister()
         observer = null
