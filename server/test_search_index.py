@@ -46,6 +46,17 @@ class RealSearchTest(unittest.TestCase):
                 scores = {m["media_id"]: max((r.get("score", 0) for r in m["match_reasons"]), default=0) for m in matches}
                 self.assertGreater(scores.get(ids["red"], 0), scores.get(ids["blue"], 0), query)
             self.assertTrue(service.ai.search("blue", 0, 1)["items"])
+            self.assertEqual([], service.ai.search("not-a-real-image-file.jpg", 0, 10)["items"])
+            damaged = service.upsert_asset(device, {"local_id": "damaged", "media_type": "photo", "mime_type": "image/png", "filename": "broken.png"})
+            data = b"synthetic invalid image container"
+            session = service.start_upload(device, {"media_id": damaged["media_id"], "size": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+            service.write_chunk(device, session["upload_id"], 0, data)
+            self.assertEqual(1, service.ai.index_pending())
+            self.assertEqual(1, service.ai.status()["failed"])
+            self.assertEqual(0, service.ai.index_pending(), "bounded retry backoff")
+            self.assertEqual(3, service.ai.status()["indexed"])
+            self.assertTrue(service.ai.search("TOKYO", 0, 10)["items"])
+
 
 
 if __name__ == "__main__":

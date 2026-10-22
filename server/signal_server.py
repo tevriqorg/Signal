@@ -547,6 +547,9 @@ def make_handler(service: MediaService):
             if self.command == "POST" and len(parts) == 4 and parts[:2] == ["v1", "devices"] and parts[3] == "revoke":
                 return self.json_reply(200, service.revoke_device(self.headers.get("X-Enrollment-Key", ""), parts[2]))
             device = service.authenticate(self.headers.get("Authorization", ""))
+            if self.command == "GET" and parts == ["v1", "status"]:
+                return self.json_reply(200, {"analysis": service.ai.status() if service.ai else {"enabled": False},
+                    "analysis_degraded": service.analysis_degraded})
             if self.command == "POST" and parts == ["v1", "devices", "rotate"]:
                 return self.json_reply(200, service.rotate_device(device))
             if self.command == "DELETE" and len(parts) == 3 and parts[:2] == ["v1", "media"]:
@@ -618,7 +621,7 @@ def serve():
             while True:
                 try:
                     service.ai.index_pending()
-                    service.analysis_degraded = False
+                    service.analysis_degraded = service.ai.status()["failed"] > 0
                 except Exception:
                     # Private media/paths and exception strings never enter logs.
                     service.analysis_degraded = True

@@ -10,6 +10,7 @@ import re
 import sqlite3
 import subprocess
 import threading
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -33,6 +34,9 @@ class MediaSearchIndex:
             db.execute("""CREATE TABLE IF NOT EXISTS media_analysis(
                 asset_id TEXT PRIMARY KEY, sha TEXT NOT NULL, ocr TEXT NOT NULL,
                 vector TEXT NOT NULL, model TEXT NOT NULL)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS media_analysis_errors(
+                asset_id TEXT PRIMARY KEY, sha TEXT NOT NULL, attempts INTEGER NOT NULL,
+                next_retry REAL NOT NULL, error_code TEXT NOT NULL)""")
         self.ready = True
 
     def index_pending(self):
@@ -40,30 +44,50 @@ class MediaSearchIndex:
         with self.lock:
             with self.service.db() as db:
                 rows = db.execute("""SELECT a.* FROM assets a LEFT JOIN media_analysis m ON m.asset_id=a.id
-                    WHERE a.original_ready=1 AND a.deleted=0 AND (m.sha IS NULL OR m.sha<>a.original_sha) LIMIT 32""").fetchall()
+                    LEFT JOIN media_analysis_errors e ON e.asset_id=a.id AND e.sha=a.original_sha
+                    WHERE a.original_ready=1 AND a.deleted=0 AND (m.sha IS NULL OR m.sha<>a.original_sha)
+                    AND (e.next_retry IS NULL OR e.next_retry<=?) LIMIT 32""", (time.time(),)).fetchall()
             for row in rows:
-                # Video uses its authenticated representative cover, not fabricated frame understanding.
-                path = self.service.root / ("thumbs" if row["media_type"] == "video" else "objects") / (row["id"] if row["media_type"] == "video" else row["original_sha"])
-                if not path.is_file():
-                    continue
-                with Image.open(path) as source:
-                    image = ImageOps.exif_transpose(source).convert("RGB")
-                    image.thumbnail((1600, 1600))
-                    # Bound subprocess and pixels, and send only local PNG bytes to OCR.
-                    import io
-                    data = io.BytesIO()
-                    image.save(data, format="PNG")
-                    result = subprocess.run(["tesseract", "stdin", "stdout", "-l", os.environ.get("SIGNAL_OCR_LANG", "eng+jpn+chi_sim")],
-                        input=data.getvalue(), capture_output=True, timeout=45, check=True)
-                    ocr = result.stdout.decode("utf-8", errors="replace")[:32000]
-                    vector = self.visual.encode(image, normalize_embeddings=True).tolist()
-                with self.service.lock, self.service.db() as db:
-                    # Never attach old-source analysis to a newer version.
-                    current = db.execute("SELECT original_sha,deleted FROM assets WHERE id=?", (row["id"],)).fetchone()
-                    if current and current["original_sha"] == row["original_sha"] and not current["deleted"]:
-                        db.execute("INSERT OR REPLACE INTO media_analysis VALUES(?,?,?,?,?)",
-                            (row["id"], row["original_sha"], ocr, json.dumps(vector), "multilingual-clip-vit-b32"))
+                try:
+                    # Video uses its authenticated representative cover, not fabricated frame understanding.
+                    path = self.service.root / ("thumbs" if row["media_type"] == "video" else "objects") / (row["id"] if row["media_type"] == "video" else row["original_sha"])
+                    if not path.is_file():
+                        continue
+                    with Image.open(path) as source:
+                        image = ImageOps.exif_transpose(source).convert("RGB")
+                        image.thumbnail((1600, 1600))
+                        # Bound subprocess and pixels, and send only local PNG bytes to OCR.
+                        import io
+                        data = io.BytesIO()
+                        image.save(data, format="PNG")
+                        result = subprocess.run(["tesseract", "stdin", "stdout", "-l", os.environ.get("SIGNAL_OCR_LANG", "eng+jpn+chi_sim")],
+                            input=data.getvalue(), capture_output=True, timeout=45, check=True)
+                        ocr = result.stdout.decode("utf-8", errors="replace")[:32000]
+                        vector = self.visual.encode(image, normalize_embeddings=True).tolist()
+                    with self.service.lock, self.service.db() as db:
+                        # Never attach old-source analysis to a newer version.
+                        current = db.execute("SELECT original_sha,deleted FROM assets WHERE id=?", (row["id"],)).fetchone()
+                        if current and current["original_sha"] == row["original_sha"] and not current["deleted"]:
+                            db.execute("INSERT OR REPLACE INTO media_analysis VALUES(?,?,?,?,?)",
+                                (row["id"], row["original_sha"], ocr, json.dumps(vector), "multilingual-clip-vit-b32"))
+                            db.execute("DELETE FROM media_analysis_errors WHERE asset_id=?", (row["id"],))
+                except Exception as error:
+                    # One malformed media must not block every later asset; retain a private bounded error code.
+                    with self.service.db() as db:
+                        previous = db.execute("SELECT attempts FROM media_analysis_errors WHERE asset_id=? AND sha=?",
+                            (row["id"], row["original_sha"])).fetchone()
+                        attempts = (previous[0] if previous else 0) + 1
+                        db.execute("INSERT OR REPLACE INTO media_analysis_errors VALUES(?,?,?,?,?)",
+                            (row["id"], row["original_sha"], attempts,
+                             time.time() + min(3600, 5 * 2 ** min(attempts, 10)), type(error).__name__[:80]))
             return len(rows)
+
+    def status(self):
+        with self.service.db() as db:
+            total = db.execute("SELECT COUNT(*) FROM assets WHERE original_ready=1 AND deleted=0").fetchone()[0]
+            indexed = db.execute("SELECT COUNT(*) FROM assets a JOIN media_analysis m ON m.asset_id=a.id AND m.sha=a.original_sha WHERE a.deleted=0 AND a.original_ready=1").fetchone()[0]
+            failed = db.execute("SELECT COUNT(*) FROM assets a JOIN media_analysis_errors e ON e.asset_id=a.id AND e.sha=a.original_sha WHERE a.deleted=0 AND a.original_ready=1").fetchone()[0]
+        return {"enabled": True, "indexed": indexed, "pending": total - indexed, "failed": failed}
 
     def search(self, query, offset, limit):
         from signal_server import public_item
