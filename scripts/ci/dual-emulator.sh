@@ -71,3 +71,18 @@ for role in A B; do
   adb -s "$serial" logcat -d > "dual-evidence/$role-logcat.txt"
   phase "$role" migration
 done
+
+# Actual Android permission changes occur between instrumentation processes.
+for role in A B; do
+  serial=emulator-5554; [[ "$role" == B ]] && serial=emulator-5556
+  phase "$role" permission-full
+  adb -s "$serial" shell pm revoke com.wb.signalpro android.permission.READ_MEDIA_VIDEO
+  adb -s "$serial" shell pm grant com.wb.signalpro android.permission.READ_MEDIA_VISUAL_USER_SELECTED
+  phase "$role" permission-partial
+  adb -s "$serial" shell pm revoke com.wb.signalpro android.permission.READ_MEDIA_IMAGES
+  adb -s "$serial" shell pm revoke com.wb.signalpro android.permission.READ_MEDIA_VISUAL_USER_SELECTED
+  phase "$role" permission-denied
+  adb -s "$serial" shell pm grant com.wb.signalpro android.permission.READ_MEDIA_IMAGES
+  adb -s "$serial" shell pm grant com.wb.signalpro android.permission.READ_MEDIA_VIDEO
+  adb -s "$serial" shell dumpsys jobscheduler > "dual-evidence/$role-jobscheduler.txt"
+done

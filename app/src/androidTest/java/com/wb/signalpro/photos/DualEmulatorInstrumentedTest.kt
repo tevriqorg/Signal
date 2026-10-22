@@ -166,6 +166,24 @@ class DualEmulatorInstrumentedTest {
                     device.takeScreenshot(File("/sdcard/Pictures/dual-video-playing.png"))
                 } finally { activity.finish() }
             }
+            "permission-full", "permission-partial", "permission-denied" -> {
+                val expected = when (phase) {
+                    "permission-full" -> MediaAccessLevel.FULL
+                    "permission-partial" -> MediaAccessLevel.PARTIAL
+                    else -> MediaAccessLevel.DENIED
+                }
+                assertEquals(expected, MediaPermissionPolicy.current(context))
+                val activity = instrumentation.startActivitySync(Intent(context, GalleryActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                try {
+                    val device = UiDevice.getInstance(instrumentation)
+                    assertTrue(device.wait(Until.hasObject(By.text("照片")), 15000))
+                    if (expected != MediaAccessLevel.FULL) {
+                        val label = if (expected == MediaAccessLevel.PARTIAL) "仅部分相册可访问" else "授权后才能浏览本机相册"
+                        assertTrue(device.wait(Until.hasObject(By.text(label)), 15000))
+                    }
+                    assertTrue(device.takeScreenshot(File("/sdcard/Pictures/dual-permission-$role.png")))
+                } finally { activity.finish() }
+            }
             "migration" -> {
                 val name = "signal-gallery-sync.db"
                 context.deleteDatabase(name)
