@@ -118,12 +118,14 @@ internal class SignalMediaClient(private val context: Context) {
             MediaType.SCREENSHOT -> "screenshot"
             else -> "photo"
         }
-        val data = JSONObject().put("local_id", item.id.value).put("source_version", item.toString())
+        val data = JSONObject().put("local_id", item.id.value).put("source_version", sha(item.toString().toByteArray()))
             .put("media_type", kind)
             .put("mime_type", item.mimeType ?: if (kind == "video") "video/mp4" else "image/jpeg")
             .put("captured_at", item.capturedAtEpochMs ?: item.addedAtEpochMs)
             .put("width", item.width).put("height", item.height)
             .put("duration_ms", item.durationMs).put("filename", item.displayName ?: "")
+        runCatching { context.contentResolver.openAssetFileDescriptor(Uri.parse(item.contentUri), "r")?.use { it.length } }
+            .getOrNull()?.takeIf { it >= 0 }?.let { data.put("source_size", it) }
         val result = JSONObject(String(request(credential.serverUrl, "POST", "/v1/media",
             data.toString().toByteArray(), credential.deviceToken)))
         return result.getString("media_id")
@@ -141,7 +143,7 @@ internal class SignalMediaClient(private val context: Context) {
         check(preview.compress(Bitmap.CompressFormat.JPEG, 75, output))
         val bytes = output.toByteArray()
         request(credential.serverUrl, "PUT", "/v1/media/$mediaId/thumbnail", bytes, credential.deviceToken,
-            mapOf("X-SHA256" to sha(bytes)))
+            mapOf("X-SHA256" to sha(bytes), "X-Source-Version" to sha(item.toString().toByteArray())))
     }
 
     fun uploadOriginal(item: MediaItem, mediaId: String, shouldContinue: () -> Boolean, progress: (Long, Long) -> Unit): Boolean {
@@ -162,6 +164,7 @@ internal class SignalMediaClient(private val context: Context) {
         require(length > 0L) { "原件为空" }
         val hash = digest.digest().joinToString("") { "%02x".format(it) }
         val payload = JSONObject().put("media_id", mediaId).put("size", length).put("sha256", hash)
+            .put("source_version", sha(item.toString().toByteArray()))
         val session = JSONObject(String(request(credential.serverUrl, "POST", "/v1/uploads",
             payload.toString().toByteArray(), credential.deviceToken)))
         if (session.optBoolean("complete")) { progress(length, length); return true }

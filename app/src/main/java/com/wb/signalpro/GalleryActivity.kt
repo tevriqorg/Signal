@@ -458,6 +458,10 @@ private fun GalleryScreen(
                         fontSize = 13.sp)
                     Text("待上传：" + state.sync.pendingUploads + " · 异常：" + state.sync.failures,
                         fontSize = 13.sp)
+                    state.sync.devices.forEach { device ->
+                        Text(device.name + "：" + device.ready + "/" + device.total + " 原件 · 已登记 " +
+                            (device.bytes / 1024 / 1024) + " MB", fontSize = 12.sp, color = Subtle)
+                    }
                     if (state.sync.activeTransfer.isNotBlank() && state.sync.totalBytes > 0)
                         Text("传输：" + state.sync.activeTransfer + " · " +
                             (state.sync.transferredBytes * 100 / state.sync.totalBytes) + "%",

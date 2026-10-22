@@ -74,6 +74,8 @@ class MediaService:
             columns = {r[1] for r in db.execute("PRAGMA table_info(assets)")}
             if "source_version" not in columns:
                 db.execute("ALTER TABLE assets ADD COLUMN source_version TEXT NOT NULL DEFAULT ''")
+            if "source_size" not in columns:
+                db.execute("ALTER TABLE assets ADD COLUMN source_size INTEGER")
             if "deleted" not in columns:
                 db.execute("ALTER TABLE assets ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
             device_columns = {r[1] for r in db.execute("PRAGMA table_info(devices)")}
@@ -179,6 +181,7 @@ class MediaService:
         duration = integer_field(body, "duration_ms", 0, 1000000000, optional=True)
         filename = str(body.get("filename", ""))[:180].replace("/", "_").replace("\\", "_")
         search_text = str(body.get("search_text", ""))[:2000]
+        source_size = integer_field(body, "source_size", 0, MAX_FILE, optional=True)
         source_version = str(body.get("source_version", ""))
         if len(source_version) > 4000:
             raise ApiError(400, "source version too long")
@@ -208,7 +211,7 @@ class MediaService:
                            (id,device_id,local_id,media_type,mime_type,captured_at,width,height,duration_ms,filename,search_text)
                            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                            (media_id, device["id"], local_id, media_type, mime, captured, width, height, duration, filename, search_text))
-            db.execute("UPDATE assets SET source_version=? WHERE id=?", (source_version, media_id))
+            db.execute("UPDATE assets SET source_version=?,source_size=? WHERE id=?", (source_version, source_size, media_id))
             ready = db.execute("SELECT original_ready FROM assets WHERE id=?", (media_id,)).fetchone()[0]
             db.execute("INSERT INTO changes(asset_id) VALUES (?)", (media_id,))
             db.commit()
@@ -243,18 +246,26 @@ class MediaService:
         return {"items": [public_item(row) for row in rows],
                 "next_cursor": rows[-1]["seq"] if rows else cursor}
 
-    def thumbnail(self, device: sqlite3.Row, media_id: str, data: bytes, sha: str):
-        row = self.item(media_id)
-        if row["deleted"]:
-            raise ApiError(410, "asset deleted")
-        if row["device_id"] != device["id"]:
-            raise ApiError(403, "not the owning device")
+    def thumbnail(self, device: sqlite3.Row, media_id: str, data: bytes, sha: str, source_version=None):
         if len(data) < 1 or len(data) > MAX_THUMB or not HEX64.fullmatch(sha):
             raise ApiError(400, "invalid thumbnail")
         if not hmac.compare_digest(hashlib.sha256(data).hexdigest(), sha):
             raise ApiError(422, "thumbnail sha mismatch")
-        atomic_save(self.root / "thumbs" / media_id, data)
         with self.lock, self.db() as db:
+            row = self.item(media_id)
+            if row["deleted"]:
+                raise ApiError(410, "asset deleted")
+            if row["device_id"] != device["id"]:
+                raise ApiError(403, "not the owning device")
+            if source_version is not None and source_version != row["source_version"]:
+                raise ApiError(409, "source revision changed")
+            destination = self.root / "thumbs" / media_id
+            previous = destination.stat().st_size if destination.exists() else 0
+            used = sum(p.stat().st_size for name in ("objects", "thumbs", "staging")
+                       for p in (self.root / name).iterdir() if p.is_file())
+            if used - previous + len(data) > self.quota_bytes:
+                raise ApiError(507, "storage quota exceeded")
+            atomic_save(destination, data)
             db.execute("UPDATE assets SET thumb_ready=1 WHERE id=?", (media_id,))
             db.execute("INSERT INTO changes(asset_id) VALUES (?)", (media_id,))
             db.commit()
@@ -272,6 +283,9 @@ class MediaService:
         if not HEX64.fullmatch(sha):
             raise ApiError(400, "invalid sha256")
         with self.lock, self.db() as db:
+            row = self.item(media_id)
+            if body.get("source_version") is not None and body["source_version"] != row["source_version"]:
+                raise ApiError(409, "source revision changed")
             if row["original_ready"] and row["original_sha"] == sha and row["size"] == size:
                 return {"upload_id": None, "offset": size, "complete": True}
             reusable = self.root / "objects" / sha
@@ -294,7 +308,7 @@ class MediaService:
             used = sum(p.stat().st_size for name in ("objects", "staging", "thumbs")
                        for p in (self.root / name).iterdir() if p.is_file())
             reserved = db.execute("SELECT COALESCE(SUM(size-offset),0) FROM uploads WHERE done=0").fetchone()[0]
-            if used + reserved + size > self.quota_bytes:
+            if used + reserved + size > self.quota_bytes or shutil.disk_usage(self.root).free < reserved + size + 64 * 1024 * 1024:
                 raise ApiError(507, "storage quota exceeded")
             upload_id = str(uuid.uuid4())
             db.execute("INSERT INTO uploads(id,asset_id,device_id,size,sha) VALUES(?,?,?,?,?)",
@@ -387,7 +401,7 @@ def public_item(row):
         "mime_type": row["mime_type"], "captured_at": row["captured_at"],
         "width": row["width"], "height": row["height"],
         "duration_ms": row["duration_ms"], "filename": row["filename"],
-        "size": row["size"], "sha256": row["original_sha"],
+        "size": row["size"] if row["size"] is not None else row["source_size"], "sha256": row["original_sha"],
         "deleted": bool(row["deleted"]),
         "original_ready": bool(row["original_ready"]),
         "thumbnail_ready": bool(row["thumb_ready"]), "revision": row["seq"]
@@ -553,7 +567,7 @@ def make_handler(service: MediaService):
             if self.command == "PUT" and len(parts) == 4 and parts[:2] == ["v1", "media"] and parts[3] == "thumbnail":
                 data = self.body(MAX_THUMB)
                 return self.json_reply(200, service.thumbnail(device, parts[2], data,
-                                       self.headers.get("X-SHA256", "")))
+                                       self.headers.get("X-SHA256", ""), self.headers.get("X-Source-Version")))
             if self.command == "GET" and len(parts) == 4 and parts[:2] == ["v1", "media"]:
                 path, mime = service.content(parts[2], parts[3])
                 if not path.is_file():

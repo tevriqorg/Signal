@@ -8,7 +8,10 @@ import com.wb.signalpro.data.model.MediaType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+internal data class DeviceMediaProgress(val name: String, val ready: Int, val total: Int, val bytes: Long)
+
 internal data class GallerySyncSnapshot(
+    val devices: List<DeviceMediaProgress> = emptyList(),
     val paired: Boolean = false,
     val healthy: Boolean = false,
     val description: String = "尚未连接 Signal Server",
@@ -52,6 +55,10 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
     fun snapshot(healthy: Boolean, message: String, bytes: Long = 0, total: Long = 0, active: String = ""): GallerySyncSnapshot {
         val locals = store.localSnapshot()
         return GallerySyncSnapshot(
+            devices = store.allCatalog().groupBy { it.deviceId }.values.map { entries ->
+                DeviceMediaProgress(entries.first().deviceName, entries.count { it.originalReady }, entries.size,
+                    entries.sumOf { it.size ?: 0L })
+            },
             paired = client.paired, healthy = healthy && remoteFailures().isEmpty(), description = message,
             local = locals, remote = store.remote(client.deviceId),
             transferredBytes = bytes, totalBytes = total,

@@ -150,6 +150,12 @@ class SignalServerIntegrationTest(unittest.TestCase):
         self.assertEqual(200, code)
         self.assertEqual(media, changed["media_id"])
         self.assertFalse(changed["original_ready"])
+        code, _ = self.call("POST", "/v1/uploads", {"media_id": media, "size": len(payload),
+            "sha256": sha, "source_version": "generation-1"}, token=self.device_a)
+        self.assertEqual(409, code)
+        code, _ = self.call("PUT", f"/v1/media/{media}/thumbnail", payload, token=self.device_a,
+            headers={"X-SHA256": sha, "X-Source-Version": "generation-1"})
+        self.assertEqual(409, code)
         self.assertIsNone(self.service.item(media)["original_sha"])
         self.assertFalse(self.service.item(media)["thumb_ready"])
         code, _ = self.call("GET", f"/v1/media/{media}/original", token=self.device_b)

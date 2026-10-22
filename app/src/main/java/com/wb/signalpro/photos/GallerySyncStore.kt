@@ -98,17 +98,18 @@ internal class GallerySyncStore(context: Context) : SQLiteOpenHelper(context, "s
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
     }
-    fun remote(deviceId: String): List<RemotePhoto> {
+    fun allCatalog(): List<RemotePhoto> {
         val result = ArrayList<RemotePhoto>()
         readableDatabase.rawQuery("SELECT json FROM remote_catalog ORDER BY revision DESC", null).use { c ->
             while (c.moveToNext()) {
                 runCatching { RemotePhoto.parse(JSONObject(c.getString(0))) }.getOrNull()?.let {
-                    if (it.deviceId != deviceId && !it.deleted) result.add(it)
+                    if (!it.deleted) result.add(it)
                 }
             }
         }
         return result
     }
+    fun remote(deviceId: String) = allCatalog().filter { it.deviceId != deviceId }
     fun localSnapshot(): Map<String, LocalTransfer> {
         val result = LinkedHashMap<String, LocalTransfer>()
         readableDatabase.rawQuery("SELECT local_id,media_id,verified,failed FROM local_sync", null).use { c ->
