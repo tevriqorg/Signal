@@ -183,7 +183,7 @@ class DualEmulatorInstrumentedTest {
                 val media = GallerySyncStore(context).use { it.remote(client.deviceId).first { photo -> photo.fileName.startsWith("dual-") && !photo.isVideo } }
                 GallerySyncEngine(context).use { engine ->
                     engine.clearOriginalCache()
-                    client.preview(media.id).delete()
+                    client.preview(media.id)?.delete()
                     assertTrue(runCatching { engine.loadOriginal(media) { _, _ -> } }.isFailure)
                     assertTrue(runCatching { engine.loadPreview(media) }.isFailure)
                     var state = engine.snapshot(true, "")

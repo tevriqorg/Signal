@@ -14,6 +14,28 @@ import java.security.KeyStore
 
 @RunWith(AndroidJUnit4::class)
 class PairingRecoveryInstrumentedTest {
+    @Test fun wrappingKeyCreationCannotRaceWithParallelCredentialReads(): Unit = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val endpoint = "http://127.0.0.1:8765"
+        val store = SignalPairingStore(context)
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(4)
+        try {
+            store.save(endpoint, "synthetic-concurrent-token")
+            KeyStore.getInstance("AndroidKeyStore").apply { load(null); deleteEntry("signal-gallery-token-v1") }
+            (1..4).map { pool.submit { repeat(20) { assertNull(store.read()) } } }.forEach { it.get() }
+            assertFalse("reading missing credentials cannot replace their wrapping key",
+                KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.containsAlias("signal-gallery-token-v1"))
+            (1..4).map { pool.submit { repeat(20) {
+                store.save(endpoint, "synthetic-concurrent-token")
+                assertEquals("synthetic-concurrent-token", store.read()!!.deviceToken)
+            } } }.forEach { it.get() }
+        } finally {
+            pool.shutdownNow()
+            GallerySyncEngine(context).use { it.pair(endpoint, "synthetic-test-enrollment-secret", "Android Emulator") }
+        }
+        Unit
+    }
+
     @Test fun invalidatedKeyCanRecoverStableIdentityAndCenterSwitchCannotReuseOldProofs(): Unit = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val endpoint = "http://127.0.0.1:8765"
