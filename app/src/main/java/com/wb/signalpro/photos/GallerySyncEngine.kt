@@ -30,9 +30,10 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
     private val failurePrefs = app.getSharedPreferences("gallery-remote-failures", Context.MODE_PRIVATE)
     private var knownItems: List<MediaItem> = emptyList()
     private fun remoteFailures(): Set<String> = failurePrefs.getStringSet("ids", emptySet())!!.toSet()
-    @Synchronized private fun remoteFailure(id: String, failed: Boolean) {
+    @Synchronized private fun remoteFailure(id: String, failed: Boolean, kind: String = "original") {
         val ids = remoteFailures().toMutableSet()
-        if (failed) ids.add(id) else ids.remove(id)
+        val key = "$kind:$id"
+        if (failed) ids.add(key) else ids.remove(key)
         failurePrefs.edit().putStringSet("ids", ids).commit()
     }
     @Volatile var foreground = false
@@ -56,7 +57,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
             transferredBytes = bytes, totalBytes = total,
             pendingUploads = knownItems.count { locals[it.id.value]?.verified != true || store.sourceVersion(it.id.value) != it.toString() },
             failures = locals.values.count { it.failed } + remoteFailures().size,
-            remoteFailures = remoteFailures(),
+            remoteFailures = remoteFailures().map { it.substringAfter(':') }.toSet(),
             activeTransfer = active,
         )
     }
@@ -168,8 +169,8 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
     fun cachedPreview(media: RemotePhoto) = client.preview(media.id)
     fun cachedOriginal(media: RemotePhoto) = client.original(media.id)
     suspend fun loadPreview(media: RemotePhoto) = withContext(Dispatchers.IO) {
-        try { client.fetchPreview(media).also { remoteFailure(media.id, false) } }
-        catch (error: Exception) { if (media.thumbReady) remoteFailure(media.id, true); throw error }
+        try { client.fetchPreview(media).also { remoteFailure(media.id, false, "preview") } }
+        catch (error: Exception) { if (media.thumbReady) remoteFailure(media.id, true, "preview"); throw error }
     }
 
     override fun close() { cancelled = true; store.close() }

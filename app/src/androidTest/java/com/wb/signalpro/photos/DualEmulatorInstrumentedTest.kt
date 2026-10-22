@@ -45,7 +45,7 @@ class DualEmulatorInstrumentedTest {
         }
         return result.values.toList()
     }
-    @Test fun phase() = runBlocking {
+    @Test fun phase(): Unit = runBlocking {
         val phase = args.getString("phase") ?: error("phase required")
         when (phase) {
             "publish" -> {
@@ -184,5 +184,6 @@ class DualEmulatorInstrumentedTest {
             }
             else -> error("unknown phase")
         }
+        Unit
     }
 }

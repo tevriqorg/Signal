@@ -597,7 +597,7 @@ private fun GalleryCell(item: MediaItem, badge: GalleryTransferBadge, onClick: (
 @Composable
 private fun RemoteCell(media: RemotePhoto, badge: GalleryTransferBadge,
     loadPreview: suspend (RemotePhoto) -> java.io.File, onClick: () -> Unit, onFailed: () -> Unit) {
-    val path by produceState<String?>(initialValue = null, media.id, media.thumbReady) {
+    val path by produceState<String?>(initialValue = null, media.id, media.thumbReady, media.revision) {
         value = runCatching { loadPreview(media).absolutePath }
             .onFailure { if (media.thumbReady) onFailed() }.getOrNull()
     }

@@ -188,7 +188,10 @@ internal class SignalMediaClient(private val context: Context) {
         File(File(context.filesDir, "gallery-originals"), mediaId).takeIf { it.isFile && it.length() > 0 }
 
     fun fetchPreview(media: RemotePhoto): File {
-        preview(media.id)?.let { return it }
+        preview(media.id)?.let {
+            val revision = File(it.parentFile, media.id + ".revision")
+            if (revision.isFile && revision.readText() == media.revision.toString()) return it
+        }
         val credential = pair()
         val bytes = request(credential.serverUrl, "GET", "/v1/media/" + media.id + "/thumbnail",
             null, credential.deviceToken)
@@ -200,6 +203,7 @@ internal class SignalMediaClient(private val context: Context) {
             temporary.writeBytes(bytes)
             val final = File(folder, media.id + ".jpg")
             check(temporary.renameTo(final)) { "缓存缩略图失败" }
+            File(folder, media.id + ".revision").writeText(media.revision.toString())
             return final
         } finally { temporary.delete() }
     }
@@ -263,14 +267,16 @@ internal class SignalMediaClient(private val context: Context) {
         require(required <= limit) { "原件超过当前缓存容量，请先释放空间或使用其他设备取用" }
         val entries = folder.listFiles()?.filter { it.isFile } ?: emptyList()
         var used = entries.sumOf { it.length() }
+        val existing = entries.filter { it.name.startsWith(protectedId) }.sumOf { it.length() }
+        val additional = maxOf(0L, required - existing)
         for (entry in entries.sortedBy { it.lastModified() }) {
-            if (used + required <= limit) break
+            if (used + additional <= limit) break
             if (entry.name.startsWith(protectedId) || entry.name.endsWith(".part")) continue
             val size = entry.length()
             if (entry.delete()) used -= size
         }
-        check(used + required <= limit || entries.any { it.name.startsWith(protectedId) }) { "缓存空间不足，请稍后重试" }
-        check(folder.usableSpace >= required + 16L * 1024 * 1024) { "设备存储空间不足" }
+        check(used + additional <= limit) { "缓存空间不足，请稍后重试" }
+        check(folder.usableSpace >= additional + 16L * 1024 * 1024) { "设备存储空间不足" }
     }
 
     private fun request(url: String, method: String, path: String, data: ByteArray?, token: String?,

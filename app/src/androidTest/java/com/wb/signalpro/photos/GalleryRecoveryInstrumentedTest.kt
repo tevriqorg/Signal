@@ -12,7 +12,7 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class GalleryRecoveryInstrumentedTest {
-    @Test fun fullLocalIndexHasNoTwoThousandItemTruncation() = runBlocking {
+    @Test fun fullLocalIndexHasNoTwoThousandItemTruncation(): Unit = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         context.deleteDatabase("signal-media.db")
         val items = (0 until 2501).map { number ->
@@ -26,6 +26,7 @@ class GalleryRecoveryInstrumentedTest {
             assertEquals(2501, loaded.map { it.id }.toSet().size)
         }
         context.deleteDatabase("signal-media.db")
+        Unit
     }
 
     @Test fun videoNotificationIsPermissionAwareAndThrottled() {
