@@ -61,12 +61,12 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
             var failed = false
             try {
                 // Fetch deltas in pages. The cursor and remote entries persist over process death.
-                repeat(20) {
+                while (true) {
                     if (cancelled) return@withContext
                     val start = store.cursor()
                     val result = client.catalog(start)
                     store.ingest(result.items, result.cursor)
-                    if (result.items.size < 200 || result.cursor == start) return@repeat
+                    if (result.items.size < 200 || result.cursor == start) break
                 }
                 onUpdate(snapshot(true, "目录已更新"))
             } catch (error: Exception) {
@@ -76,17 +76,19 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
 
             var touched = 0
             for (media in items) {
-                if (cancelled || (!foreground && !allowBackgroundImages) || touched >= 250) break
+                if (cancelled || (!foreground && !allowBackgroundImages)) break
                 val old = store.local(media.id.value)
-                if (old?.verified == true) continue
+                val version = media.toString()
+                if (old?.verified == true && store.sourceVersion(media.id.value) == version) continue
                 if (old?.failed == true) {
                     // Failed items remain visible in red until retry/reconnect; attempt again here.
                 }
                 var mediaId = old?.mediaId
                 try {
-                    if (mediaId == null) {
+                    if (mediaId == null || store.sourceVersion(media.id.value) != version) {
                         mediaId = client.register(media)
                         store.saveLocal(media.id.value, mediaId, verified = false)
+                        store.saveSourceVersion(media.id.value, version)
                         touched++
                         onUpdate(snapshot(true, "基础信息已同步，等待原件"))
                         runCatching { client.uploadThumbnail(media, mediaId) }
@@ -112,11 +114,11 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
             }
             if (!cancelled) {
                 runCatching {
-                    repeat(20) {
+                    while (true) {
                         val start = store.cursor()
                         val result = client.catalog(start)
                         store.ingest(result.items, result.cursor)
-                        if (result.items.size < 200 || result.cursor == start) return@repeat
+                        if (result.items.size < 200 || result.cursor == start) break
                     }
                 }.onFailure { failed = true }
                 onUpdate(snapshot(!failed && store.localSnapshot().values.none { it.failed },

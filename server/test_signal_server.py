@@ -132,6 +132,33 @@ class SignalServerIntegrationTest(unittest.TestCase):
         self.assertIsNone(retry["upload_id"])
         self.assertEqual(sha, list((Path(self.temp.name) / "objects").iterdir())[0].name)
 
+    def test_source_revision_invalidates_verified_original_and_stale_sessions(self):
+        media = self.make_photo()
+        payload = b"old-original"
+        sha = hashlib.sha256(payload).hexdigest()
+        _, session = self.call("POST", "/v1/uploads", {"media_id": media, "size": len(payload), "sha256": sha}, token=self.device_a)
+        code, result = self.call("PUT", "/v1/uploads/" + session["upload_id"], payload, token=self.device_a, headers={"X-Offset": "0"})
+        self.assertEqual(200, code)
+        self.assertTrue(result["complete"])
+        # A no-op metadata retry preserves verified bytes.
+        self.assertEqual(media, self.make_photo())
+        self.assertTrue(self.service.item(media)["original_ready"])
+        update = {"local_id": "local-1", "media_type": "photo", "mime_type": "image/jpeg",
+                  "filename": "autumn.jpg", "captured_at": 1792000000000, "width": 1200,
+                  "height": 900, "source_version": "generation-2"}
+        code, changed = self.call("POST", "/v1/media", update, token=self.device_a)
+        self.assertEqual(200, code)
+        self.assertEqual(media, changed["media_id"])
+        self.assertFalse(changed["original_ready"])
+        self.assertIsNone(self.service.item(media)["original_sha"])
+        self.assertFalse(self.service.item(media)["thumb_ready"])
+        code, _ = self.call("GET", f"/v1/media/{media}/original", token=self.device_b)
+        self.assertEqual(404, code)
+        code, _ = self.call("PUT", "/v1/uploads/" + session["upload_id"], payload, token=self.device_a, headers={"X-Offset": "0"})
+        self.assertEqual(404, code)
+        # The old content-addressed object remains safely retained.
+        self.assertEqual(payload, (Path(self.temp.name) / "objects" / sha).read_bytes())
+
     def test_bad_hash_rolls_back_and_owner_only_upload(self):
         photo = self.make_photo()
         code, upload = self.call("POST", "/v1/uploads", {"media_id": photo, "size": 5, "sha256": "a"*64}, token=self.device_a)

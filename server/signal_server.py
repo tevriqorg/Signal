@@ -68,6 +68,11 @@ class MediaService:
                 CREATE INDEX IF NOT EXISTS assets_date_idx ON assets(captured_at DESC);
             """)
 
+            columns = {r[1] for r in db.execute("PRAGMA table_info(assets)")}
+            if "source_version" not in columns:
+                db.execute("ALTER TABLE assets ADD COLUMN source_version TEXT NOT NULL DEFAULT ''")
+            db.commit()
+
     def db(self):
         connection = sqlite3.connect(self.db_path, timeout=30)
         connection.row_factory = sqlite3.Row
@@ -116,11 +121,24 @@ class MediaService:
         duration = integer_field(body, "duration_ms", 0, 1000000000, optional=True)
         filename = str(body.get("filename", ""))[:180].replace("/", "_").replace("\\", "_")
         search_text = str(body.get("search_text", ""))[:2000]
+        source_version = str(body.get("source_version", ""))
+        if len(source_version) > 4000:
+            raise ApiError(400, "source version too long")
         with self.lock, self.db() as db:
             row = db.execute("SELECT * FROM assets WHERE device_id=? AND local_id=?",
                              (device["id"], local_id)).fetchone()
             if row:
                 media_id = row["id"]
+                changed = (source_version != row["source_version"] or any(
+                    row[k] != v for k, v in zip(
+                        ("media_type", "mime_type", "captured_at", "width", "height", "duration_ms", "filename"),
+                        (media_type, mime, captured, width, height, duration, filename))))
+                if changed:
+                    db.execute("UPDATE assets SET original_ready=0,original_sha=NULL,size=NULL,thumb_ready=0 WHERE id=?", (media_id,))
+                    # Old sessions must never commit bytes for a superseded source revision.
+                    for upload in db.execute("SELECT id FROM uploads WHERE asset_id=?", (media_id,)).fetchall():
+                        (self.root / "staging" / upload["id"]).unlink(missing_ok=True)
+                    db.execute("DELETE FROM uploads WHERE asset_id=?", (media_id,))
                 db.execute("""UPDATE assets SET media_type=?,mime_type=?,captured_at=?,
                            width=?,height=?,duration_ms=?,filename=?,search_text=? WHERE id=?""",
                            (media_type, mime, captured, width, height, duration, filename, search_text, media_id))
@@ -130,9 +148,11 @@ class MediaService:
                            (id,device_id,local_id,media_type,mime_type,captured_at,width,height,duration_ms,filename,search_text)
                            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                            (media_id, device["id"], local_id, media_type, mime, captured, width, height, duration, filename, search_text))
+            db.execute("UPDATE assets SET source_version=? WHERE id=?", (source_version, media_id))
+            ready = db.execute("SELECT original_ready FROM assets WHERE id=?", (media_id,)).fetchone()[0]
             db.execute("INSERT INTO changes(asset_id) VALUES (?)", (media_id,))
             db.commit()
-        return {"media_id": media_id, "origin_device_id": device["id"], "original_ready": bool(row["original_ready"]) if row else False}
+        return {"media_id": media_id, "origin_device_id": device["id"], "original_ready": bool(ready)}
 
     def item(self, media_id: str):
         try:

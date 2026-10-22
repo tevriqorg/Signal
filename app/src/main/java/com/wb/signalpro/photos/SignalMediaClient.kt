@@ -118,7 +118,7 @@ internal class SignalMediaClient(private val context: Context) {
             MediaType.SCREENSHOT -> "screenshot"
             else -> "photo"
         }
-        val data = JSONObject().put("local_id", item.id.value)
+        val data = JSONObject().put("local_id", item.id.value).put("source_version", item.toString())
             .put("media_type", kind)
             .put("mime_type", item.mimeType ?: if (kind == "video") "video/mp4" else "image/jpeg")
             .put("captured_at", item.capturedAtEpochMs ?: item.addedAtEpochMs)
@@ -207,36 +207,48 @@ internal class SignalMediaClient(private val context: Context) {
         }
         val credential = pair()
         val folder = File(context.filesDir, "gallery-originals").apply { mkdirs() }
-        val tmp = File.createTempFile("pending", ".media", folder)
+        // Stable partial path survives process death. SHA binds it to the exact revision.
+        val tmp = File(folder, media.id + "." + media.sha256 + ".part")
+        if (media.size != null && tmp.length() > media.size) tmp.delete()
+        var offset = tmp.length()
+        if (media.size != null && offset == media.size && fileSha(tmp) == media.sha256) {
+            val target = File(folder, media.id)
+            check(tmp.renameTo(target)) { "无法缓存原件" }
+            return target
+        }
+        val connection = open(URL(credential.serverUrl + "/v1/media/" + media.id + "/original"),
+            "GET", credential.deviceToken)
         try {
-            val connection = open(URL(credential.serverUrl + "/v1/media/" + media.id + "/original"),
-                "GET", credential.deviceToken)
-            try {
-                if (connection.responseCode !in 200..299) throw httpError(connection)
-                val digest = MessageDigest.getInstance("SHA-256")
-                var total = 0L
-                connection.inputStream.use { input ->
-                    tmp.outputStream().use { output ->
-                        val block = ByteArray(128 * 1024)
-                        while (true) {
-                            val read = input.read(block)
-                            if (read == -1) break
-                            output.write(block, 0, read)
-                            digest.update(block, 0, read)
-                            total += read
-                            progress(total, media.size ?: 0L)
-                        }
+            if (offset > 0) connection.setRequestProperty("Range", "bytes=$offset-")
+            val status = connection.responseCode
+            if (status !in listOf(200, 206)) throw httpError(connection)
+            if (status == 206) {
+                check(connection.getHeaderField("Content-Range")?.startsWith("bytes $offset-") == true) {
+                    "服务器续传范围不匹配"
+                }
+            } else offset = 0L
+            var total = offset
+            connection.inputStream.use { input ->
+                java.io.FileOutputStream(tmp, offset > 0).use { output ->
+                    val block = ByteArray(128 * 1024)
+                    while (true) {
+                        val read = input.read(block)
+                        if (read == -1) break
+                        output.write(block, 0, read)
+                        total += read
+                        progress(total, media.size ?: 0L)
                     }
+                    output.fd.sync()
                 }
-                val hash = digest.digest().joinToString("") { "%02x".format(it) }
-                check(hash == media.sha256 && (media.size == null || media.size == total)) {
-                    "下载文件完整性校验失败"
-                }
-                val target = File(folder, media.id)
-                check(tmp.renameTo(target)) { "无法缓存原件" }
-                return target
-            } finally { connection.disconnect() }
-        } finally { tmp.delete() }
+            }
+            if (fileSha(tmp) != media.sha256 || (media.size != null && media.size != total)) {
+                tmp.delete()
+                error("下载文件完整性校验失败")
+            }
+            val target = File(folder, media.id)
+            check(tmp.renameTo(target)) { "无法缓存原件" }
+            return target
+        } finally { connection.disconnect() }
     }
 
     private fun request(url: String, method: String, path: String, data: ByteArray?, token: String?,

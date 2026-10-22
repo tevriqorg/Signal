@@ -39,14 +39,25 @@ internal data class RemotePhoto(
 }
 internal data class LocalTransfer(val mediaId: String, val verified: Boolean, val failed: Boolean)
 
-internal class GallerySyncStore(context: Context) : SQLiteOpenHelper(context, "signal-gallery-sync.db", null, 1) {
+internal class GallerySyncStore(context: Context) : SQLiteOpenHelper(context, "signal-gallery-sync.db", null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE local_sync (local_id TEXT PRIMARY KEY, media_id TEXT NOT NULL, verified INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0)")
         db.execSQL("CREATE TABLE remote_catalog (media_id TEXT PRIMARY KEY, json TEXT NOT NULL, revision INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE source_versions (local_id TEXT PRIMARY KEY, version TEXT NOT NULL)")
         db.execSQL("CREATE TABLE progress (key TEXT PRIMARY KEY, value INTEGER NOT NULL)")
     }
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        error("No upgrade path defined")
+        if (oldVersion < 2) {
+            db.execSQL("CREATE TABLE source_versions (local_id TEXT PRIMARY KEY, version TEXT NOT NULL)")
+            db.execSQL("UPDATE local_sync SET verified=0")
+        }
+    }
+    fun sourceVersion(localId: String): String? = readableDatabase.rawQuery(
+        "SELECT version FROM source_versions WHERE local_id=?", arrayOf(localId)).use {
+        if (it.moveToFirst()) it.getString(0) else null
+    }
+    fun saveSourceVersion(localId: String, version: String) {
+        writableDatabase.execSQL("INSERT OR REPLACE INTO source_versions VALUES(?,?)", arrayOf(localId, version))
     }
     fun local(localId: String): LocalTransfer? =
         readableDatabase.rawQuery("SELECT media_id,verified,failed FROM local_sync WHERE local_id=?", arrayOf(localId)).use {
@@ -66,9 +77,7 @@ internal class GallerySyncStore(context: Context) : SQLiteOpenHelper(context, "s
             items.forEach { item ->
                 db.execSQL("INSERT OR REPLACE INTO remote_catalog(media_id,json,revision) VALUES(?,?,?)",
                     arrayOf(item.id, item.toJson().toString(), item.revision))
-                if (item.originalReady) {
-                    db.execSQL("UPDATE local_sync SET verified=1,failed=0 WHERE media_id=?", arrayOf(item.id))
-                }
+
             }
             db.execSQL("INSERT OR REPLACE INTO progress(key,value) VALUES('catalog',?)", arrayOf(cursor))
             db.setTransactionSuccessful()
