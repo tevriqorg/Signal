@@ -67,6 +67,11 @@ internal class GallerySyncStore(context: Context) : SQLiteOpenHelper(context, "s
         "SELECT json FROM remote_catalog WHERE media_id=?", arrayOf(mediaId)).use {
         it.moveToFirst() && JSONObject(it.getString(0)).optBoolean("thumbnail_ready")
     }
+    fun sourceVersions(): Map<String, String> = buildMap {
+        readableDatabase.rawQuery("SELECT local_id,version FROM source_versions", null).use { cursor ->
+            while (cursor.moveToNext()) put(cursor.getString(0), cursor.getString(1))
+        }
+    }
     fun sourceVersion(localId: String): String? = readableDatabase.rawQuery(
         "SELECT version FROM source_versions WHERE local_id=?", arrayOf(localId)).use {
         if (it.moveToFirst()) it.getString(0) else null

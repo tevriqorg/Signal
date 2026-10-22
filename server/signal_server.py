@@ -547,6 +547,12 @@ def make_handler(service: MediaService):
             if self.command == "POST" and len(parts) == 4 and parts[:2] == ["v1", "devices"] and parts[3] == "revoke":
                 return self.json_reply(200, service.revoke_device(self.headers.get("X-Enrollment-Key", ""), parts[2]))
             device = service.authenticate(self.headers.get("Authorization", ""))
+            if self.command == "POST" and parts == ["v1", "analysis", "retry"]:
+                if service.ai is None:
+                    raise ApiError(409, "analysis is not enabled")
+                with service.db() as db:
+                    db.execute("UPDATE media_analysis_errors SET next_retry=0")
+                return self.json_reply(200, {"queued": True})
             if self.command == "GET" and parts == ["v1", "status"]:
                 return self.json_reply(200, {"analysis": service.ai.status() if service.ai else {"enabled": False},
                     "analysis_degraded": service.analysis_degraded})

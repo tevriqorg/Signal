@@ -86,6 +86,9 @@ import com.wb.signalpro.photos.verifiedGalleryOriginal
 import com.wb.signalpro.photos.RemotePhoto
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -102,6 +105,7 @@ class GalleryActivity : ComponentActivity() {
     private lateinit var sync: GallerySyncEngine
     private var observer: MediaChangeObserver? = null
     private var syncRequested = false
+    private var foregroundPoll: Job? = null
     private var networkObserver: android.net.ConnectivityManager.NetworkCallback? = null
     private val scope = MainScope()
     private var ui by mutableStateOf(GalleryUiState())
@@ -135,7 +139,10 @@ class GalleryActivity : ComponentActivity() {
                     onBack = { finish() },
                     onRequestAccess = { requestMediaAccess() },
                     onRefresh = { refresh(forceFull = true) },
-                    onSync = { startSync(ui.items) },
+                    onSync = { scope.launch {
+                        runCatching { sync.retryFailures() }.onFailure { ui = ui.copy(sync = sync.snapshot(false, "重试失败，请检查连接或存储")) }
+                        startSync(ui.items)
+                    } },
                     onPair = { url, code, device -> pair(url, code, device) },
                     onSearch = { search(it) },
                     onLoadRemote = { loadOriginal(it) },
@@ -152,6 +159,12 @@ class GalleryActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         sync.foreground = true
+        foregroundPoll = scope.launch {
+            while (isActive) {
+                delay(30_000)
+                if (sync.foreground && !ui.scanning) startSync(ui.items)
+            }
+        }
         val manager = getSystemService(android.net.ConnectivityManager::class.java)
         networkObserver = object : android.net.ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: android.net.Network) {
@@ -172,6 +185,8 @@ class GalleryActivity : ComponentActivity() {
     override fun onResume() { super.onResume(); refresh(false) }
     override fun onStop() {
         sync.foreground = false
+        foregroundPoll?.cancel()
+        foregroundPoll = null
         networkObserver?.let { runCatching { getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(it) } }
         networkObserver = null
         if (sync.client.paired) GalleryBackgroundScheduler.catchUp(this)
@@ -342,7 +357,7 @@ private fun GalleryScreen(
     var remoteSelected by remember { mutableStateOf<RemotePhoto?>(null) }
 
     val remote = state.searchResults ?: state.sync.remote
-    val tiles = remember(state.items, state.sync.local, remote, state.searchResults, filter) {
+    val tiles = remember(state.items, if (state.searchResults != null) state.sync.local else null, remote, state.searchResults, filter) {
         val localByServerId = state.items.mapNotNull { item ->
             state.sync.local[item.id.value]?.mediaId?.let { it to item }
         }.toMap()
@@ -502,6 +517,7 @@ private fun GalleryScreen(
                         fontSize = 13.sp)
                     Text("待上传：" + state.sync.pendingUploads + " · 异常：" + state.sync.failures,
                         fontSize = 13.sp)
+                    if (state.sync.analysisStatus.isNotBlank()) Text(state.sync.analysisStatus, fontSize = 12.sp, color = Subtle)
                     state.sync.devices.forEach { device ->
                         Text(device.name + "：" + device.ready + "/" + device.total + " 原件 · 已登记 " +
                             (device.bytes / 1024 / 1024) + " MB", fontSize = 12.sp, color = Subtle)

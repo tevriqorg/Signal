@@ -16,6 +16,7 @@ import kotlinx.coroutines.sync.withLock
 internal data class DeviceMediaProgress(val name: String, val ready: Int, val total: Int, val bytes: Long)
 
 internal data class GallerySyncSnapshot(
+    val analysisStatus: String = "",
     val devices: List<DeviceMediaProgress> = emptyList(),
     val paired: Boolean = false,
     val healthy: Boolean = false,
@@ -32,7 +33,7 @@ internal data class GallerySyncSnapshot(
 
 /** Foreground opportunity sync. The service is the only server; no AIBOX adapter exists. */
 internal class GallerySyncEngine(context: Context) : AutoCloseable {
-    companion object { private val transferMutex = Mutex() }
+    companion object { private val transferMutex = Mutex(); private val downloadMutex = Mutex() }
     private val lifecycleLock = Any()
     private var activeTransfers = 0
     private fun beginTransfer(): Boolean = synchronized(lifecycleLock) {
@@ -46,7 +47,16 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
     val client = SignalMediaClient(app)
     private val store = GallerySyncStore(app)
     private val failurePrefs = app.getSharedPreferences("gallery-remote-failures", Context.MODE_PRIVATE)
+    private var analysisStatus = ""
+    private var analysisFailures = 0
+    private fun refreshAnalysisStatus() {
+        val analysis = client.serverStatus().getJSONObject("analysis")
+        analysisFailures = analysis.optInt("failed")
+        analysisStatus = if (!analysis.optBoolean("enabled")) "AI 搜索尚未启用"
+            else "AI 索引：已处理 " + analysis.optInt("indexed") + " · 等待 " + analysis.optInt("pending") + " · 异常 " + analysisFailures
+    }
     private var knownItems: List<MediaItem> = emptyList()
+    private var knownVersions: Map<String, String> = emptyMap()
     private fun remoteFailures(): Set<String> = failurePrefs.getStringSet("ids", emptySet())!!.toSet()
     @Synchronized private fun remoteFailure(id: String, failed: Boolean, kind: String = "original") {
         val ids = remoteFailures().toMutableSet()
@@ -68,17 +78,22 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
     }
 
     fun snapshot(healthy: Boolean, message: String, bytes: Long = 0, total: Long = 0, active: String = ""): GallerySyncSnapshot {
-        val locals = store.localSnapshot()
+        val storedVersions = store.sourceVersions()
+        val locals = store.localSnapshot().mapValues { (id, transfer) ->
+            if (knownVersions[id] != null && knownVersions[id] != storedVersions[id]) transfer.copy(verified = false, failed = false)
+            else transfer
+        }
         return GallerySyncSnapshot(
+            analysisStatus = analysisStatus,
             devices = store.allCatalog().groupBy { it.deviceId }.values.map { entries ->
                 DeviceMediaProgress(entries.first().deviceName, entries.count { it.originalReady }, entries.size,
                     entries.sumOf { it.size ?: 0L })
             },
-            paired = client.paired, healthy = healthy && remoteFailures().isEmpty(), description = message,
+            paired = client.paired, healthy = healthy && locals.values.none { it.failed } && remoteFailures().isEmpty() && analysisFailures == 0, description = message,
             local = locals, remote = store.remote(client.deviceId),
             transferredBytes = bytes, totalBytes = total,
-            pendingUploads = knownItems.count { locals[it.id.value]?.verified != true || store.sourceVersion(it.id.value) != it.toString() },
-            failures = locals.values.count { it.failed } + remoteFailures().size,
+            pendingUploads = knownItems.count { locals[it.id.value]?.verified != true || storedVersions[it.id.value] != knownVersions[it.id.value] },
+            failures = locals.values.count { it.failed } + remoteFailures().size + analysisFailures,
             remoteFailures = remoteFailures().map { it.substringAfter(':') }.toSet(),
             activeTransfer = active,
         )
@@ -90,6 +105,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
             try {
             val job = currentCoroutineContext()[Job]
             knownItems = items
+            knownVersions = items.associate { it.id.value to it.toString() }
             if (!client.paired) {
                 onUpdate(snapshot(false, "未配对 Signal Server"))
                 return@withContext
@@ -105,6 +121,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                     store.ingest(result.items, result.cursor)
                     if (result.items.size < 200 || result.cursor == start) break
                 }
+                refreshAnalysisStatus()
                 onUpdate(snapshot(true, "目录已更新"))
             } catch (error: Exception) {
                 onUpdate(snapshot(isTransient(error), "连接暂不可用，将自动重试：" + (error.message ?: "未知错误")))
@@ -164,8 +181,9 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                         if (result.items.size < 200 || result.cursor == start) break
                     }
                 }.onFailure { failed = true }
-                onUpdate(snapshot(!failed && store.localSnapshot().values.none { it.failed },
-                    if (failed) "有项目需要重试" else "同步系统正常"))
+                runCatching { refreshAnalysisStatus() }
+                val unresolved = failed || store.localSnapshot().values.any { it.failed } || remoteFailures().isNotEmpty() || analysisFailures > 0
+                onUpdate(snapshot(!unresolved, if (unresolved) "有项目需要重试" else "同步系统正常"))
             }
             } finally { endTransfer() }
         } }
@@ -191,10 +209,27 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
     }
 
     suspend fun loadOriginal(media: RemotePhoto, progress: (Long, Long) -> Unit) =
-        withContext(Dispatchers.IO) {
+        withContext(Dispatchers.IO) { downloadMutex.withLock {
             try { client.fetchOriginal(media, progress).also { remoteFailure(media.id, false) } }
             catch (error: Exception) { remoteFailure(media.id, true); throw error }
+        } }
+
+    suspend fun retryFailures() = withContext(Dispatchers.IO) {
+        if (!client.paired) return@withContext
+        val catalog = store.allCatalog().associateBy { it.id }
+        for (failure in remoteFailures()) {
+            val id = failure.substringAfter(':')
+            val media = catalog[id] ?: continue
+            if (failure.startsWith("preview:")) {
+                if (media.thumbReady) loadPreview(media) else remoteFailure(id, false, "preview")
+            } else {
+                if (media.originalReady) loadOriginal(media) { _, _ -> } else remoteFailure(id, false)
+            }
         }
+        val enabled = client.serverStatus().getJSONObject("analysis").optBoolean("enabled")
+        if (enabled) client.retryAnalysis()
+        refreshAnalysisStatus()
+    }
 
     fun cachedPreview(media: RemotePhoto) = client.preview(media.id)
     fun cachedOriginal(media: RemotePhoto) = client.original(media.id)

@@ -100,6 +100,14 @@ internal class SignalMediaClient(private val context: Context) {
     }
 
     fun unpair() = credentials.clear()
+    fun serverStatus(): JSONObject {
+        val credential = pair()
+        return JSONObject(String(request(credential.serverUrl, "GET", "/v1/status", null, credential.deviceToken)))
+    }
+    fun retryAnalysis() {
+        val credential = pair()
+        request(credential.serverUrl, "POST", "/v1/analysis/retry", null, credential.deviceToken)
+    }
 
     fun catalog(since: Long, query: String = ""): SignalCatalog {
         val credential = pair()
