@@ -85,6 +85,14 @@ jobs:
         with:
           gradle-version: '9.6.0'
 
+      - name: Install Android 36 platform before emulator build
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"'
+
+      - name: Build single-emulator APKs before boot
+        run: |
+          set -o pipefail
+          timeout 12m gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace 2>&1 | tee single-build.log
+
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -107,6 +115,7 @@ jobs:
         with:
           name: g1-media-poc-evidence-${{ github.sha }}
           path: |
+            single-build.log
             gradle-instrumentation.log
             signal-server.log
             gallery-screenshot.png
@@ -137,14 +146,6 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Install actual server-side OCR and CPU vision runtime
-        if: ${{ !inputs.isolated_target }}
-        run: bash scripts/ci/install-ai-runtime.sh
-      - name: Enable KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
       - name: Mask isolated endpoint hostname in runner logs
         if: ${{ inputs.isolated_target }}
         run: |
@@ -155,6 +156,24 @@ jobs:
           assert url.scheme == 'https' and url.hostname and not url.username and not url.password
           print('::add-mask::' + url.hostname)
           PYTHON
+      - name: Verify isolated HTTPS health before build and boot
+        if: ${{ inputs.isolated_target }}
+        run: python3 scripts/ci/gallery-health-check.py --attempts 3
+      - name: Install Android 36 platform before emulator build
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"'
+      - name: Build dual-emulator APKs before boot
+        run: |
+          mkdir -p dual-evidence
+          set -o pipefail
+          timeout 12m gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace 2>&1 | tee dual-evidence/build.log
+      - name: Install actual server-side OCR and CPU vision runtime
+        if: ${{ !inputs.isolated_target }}
+        run: bash scripts/ci/install-ai-runtime.sh
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
       - name: Actual dual emulator acceptance
         uses: ReactiveCircus/android-emulator-runner@v2
         with:

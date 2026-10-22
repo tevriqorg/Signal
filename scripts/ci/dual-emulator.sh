@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p dual-evidence
-# Build only on GitHub's hosted runner, before booting the second emulator.
-timeout 12m gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace > dual-evidence/build.log 2>&1
+# APKs are built by a separate hosted-runner step before either emulator boots.
+echo '[acceptance] verify prebuilt APKs'
+[[ -s app/build/outputs/apk/debug/app-debug.apk ]]
+[[ -s app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk ]]
+sha256sum app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk > dual-evidence/apk-sha256.txt
 srv=""
 profile=runner-loopback
 phase_timeout=180s
@@ -26,10 +29,12 @@ else
 fi
 printf '{"server_profile":"%s","tls_verification":"platform defaults; no bypass","fixture_run":"%s"}\n' "$profile" "${GITHUB_RUN_ID:-local}" > dual-evidence/profile.json
 trap '[[ -z "$srv" ]] || kill "$srv" 2>/dev/null || true; adb -s emulator-5556 emu kill >/dev/null 2>&1 || true' EXIT
+echo "[acceptance] server profile: $profile; create second independent AVD"
 # Reuse the installed system image, create a distinct AVD with its own writable userdata.
 avdmanager create avd --force --name signal-peer --package 'system-images;android-35;google_apis;x86_64' --device pixel_6 <<< no
 "$ANDROID_HOME/emulator/emulator" -avd signal-peer -port 5556 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -memory 1536 > dual-evidence/emulator-B.log 2>&1 &
 for serial in emulator-5554 emulator-5556; do
+  echo "[acceptance] wait for $serial boot and install actual APKs"
   timeout 180s adb -s "$serial" wait-for-device
   for attempt in $(seq 1 180); do
     [[ "$(adb -s "$serial" shell getprop sys.boot_completed | tr -d '\r')" == 1 ]] && break
@@ -55,11 +60,8 @@ for serial in emulator-5554 emulator-5556; do
 done
 adb devices -l > dual-evidence/devices.txt
 [[ $(adb devices | grep -c '^emulator-.*device$') -eq 2 ]]
-for attempt in $(seq 1 120); do
-  curl --connect-timeout 5 --max-time 15 -fsS "$SIGNAL_TEST_ENDPOINT/health" > dual-evidence/health.json 2>/dev/null && break
-  sleep 2
-done
-python3 -c 'import json; assert json.load(open("dual-evidence/health.json"))["ai_vision"] is True'
+echo '[acceptance] both serials present; verify bounded AI-enabled health'
+python3 scripts/ci/gallery-health-check.py --attempts 6 --output dual-evidence/health.json
 # ADB remains the control channel; actual application networking is disabled on BOTH
 # profiles. Removing the reverse alone cannot interrupt a direct public HTTPS session.
 network_off() {
@@ -93,6 +95,7 @@ phase() {
   local role="$1" task="$2" serial=emulator-5554
   phase_counter=$((phase_counter + 1))
   local evidence_name="$phase_counter-$role-$task"
+  echo "[acceptance] phase $evidence_name"
   [[ "$role" == B ]] && serial=emulator-5556
   adb -s "$serial" shell input keyevent KEYCODE_WAKEUP
   adb -s "$serial" shell wm dismiss-keyguard
@@ -104,6 +107,7 @@ phase() {
 }
 interrupt_transfer() {
   local role="$1" task="$2" serial=emulator-5554
+  echo "[acceptance] transfer fault $role $task: wait for confirmed in-flight bytes"
   [[ "$role" == B ]] && serial=emulator-5556
   adb -s "$serial" shell input keyevent KEYCODE_WAKEUP
   adb -s "$serial" shell wm dismiss-keyguard
