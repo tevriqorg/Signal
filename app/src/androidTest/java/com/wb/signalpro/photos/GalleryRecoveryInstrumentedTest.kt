@@ -62,9 +62,7 @@ class GalleryRecoveryInstrumentedTest {
                 listOf(async { first.synchronize(listOf(item)) { } }, async { second.synchronize(listOf(item)) { } }).awaitAll()
                 assertTrue(first.snapshot(true, "").local[item.id.value]!!.verified)
                 assertTrue(second.snapshot(true, "").local[item.id.value]!!.verified)
-                assertEquals(1, client.catalog(0).items.map { it.id }.distinct().count { id ->
-                    client.catalog(0).items.any { it.id == id && it.fileName == "concurrent-synthetic.jpg" }
-                })
+                assertEquals(1, client.catalog(0).items.filter { it.fileName == "concurrent-synthetic.jpg" }.map { it.id }.distinct().size)
                 assertEquals(0, first.snapshot(true, "").failures)
             } finally { first.close(); second.close() }
         } finally { context.contentResolver.delete(uri, null, null) }

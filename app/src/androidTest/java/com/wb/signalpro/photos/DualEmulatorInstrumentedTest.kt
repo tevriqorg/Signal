@@ -45,10 +45,31 @@ class DualEmulatorInstrumentedTest {
         }
         return result.values.toList()
     }
-    private suspend fun actualMedia(uri: String): MediaItem = MediaIndexCoordinator(context).use { coordinator ->
-        coordinator.reconcile(forceFull = true)
-        coordinator.indexedMedia().first {
-            it.mediaStoreId == android.content.ContentUris.parseId(android.net.Uri.parse(uri))
+    private suspend fun actualMedia(uri: String, settle: Boolean = false): MediaItem {
+        if (settle) {
+            val parsed = android.net.Uri.parse(uri)
+            val path = context.contentResolver.query(parsed, arrayOf(MediaStore.MediaColumns.DATA), null, null, null)!!.use {
+                check(it.moveToFirst()); it.getString(0)
+            }
+            val latch = java.util.concurrent.CountDownLatch(1)
+            android.media.MediaScannerConnection.scanFile(context, arrayOf(path), null) { _, _ -> latch.countDown() }
+            assertTrue("synthetic MediaStore publication must finish", latch.await(15, java.util.concurrent.TimeUnit.SECONDS))
+        }
+        return MediaIndexCoordinator(context).use { coordinator ->
+            var previous: MediaItem? = null
+            var stable = 0
+            val deadline = System.currentTimeMillis() + 15000
+            while (true) {
+                coordinator.reconcile(forceFull = true)
+                val item = coordinator.indexedMedia().first { it.mediaStoreId == android.content.ContentUris.parseId(android.net.Uri.parse(uri)) }
+                if (!settle) return@use item
+                stable = if (item == previous && (item.width ?: 0) > 0 && (item.height ?: 0) > 0) stable + 1 else 0
+                if (stable >= 3) return@use item
+                assertTrue("MediaStore metadata did not settle before fault injection", System.currentTimeMillis() < deadline)
+                previous = item
+                Thread.sleep(250)
+            }
+            @Suppress("UNREACHABLE_CODE") error("unreachable")
         }
     }
     @Test fun phase(): Unit = runBlocking {
@@ -67,7 +88,7 @@ class DualEmulatorInstrumentedTest {
                     assertTrue(image.compress(Bitmap.CompressFormat.JPEG, 90, out))
                     image.recycle()
                 }
-                val item = actualMedia(uri.toString())
+                val item = actualMedia(uri.toString(), settle = true)
                 val client = client()
                 val id = client.register(item)
                 client.uploadThumbnail(item, id)
@@ -164,18 +185,19 @@ class DualEmulatorInstrumentedTest {
                 }
                 val uri = context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)!!
                 context.contentResolver.openOutputStream(uri)!!.use { output -> input.inputStream().use { it.copyTo(output) } }
-                val item = actualMedia(uri.toString())
+                val item = actualMedia(uri.toString(), settle = true)
                 val client = client()
                 val id = client.register(item)
                 client.uploadThumbnail(item, id)
                 var stopAt = 0L
                 client.uploadOriginal(item, id, { stopAt < 1024 * 1024 }) { done, _ -> stopAt = done }
                 assertFalse(all(client).first { it.id == id }.originalReady)
-                context.getSharedPreferences("dual-video", 0).edit().putString("uri", uri.toString()).commit()
+                context.getSharedPreferences("dual-video", 0).edit().putString("uri", uri.toString()).putString("source-version", item.toString()).commit()
             }
             "resume-video", "interrupt-upload" -> {
                 val uri = context.getSharedPreferences("dual-video", 0).getString("uri", null)!!
                 val item = actualMedia(uri)
+                assertEquals("network-fault fixture source must remain unchanged", context.getSharedPreferences("dual-video", 0).getString("source-version", null), item.toString())
                 val client = client()
                 val id = all(client).first { it.fileName == "dual-large-$role.mp4" }.id
                 var initial = -1L
@@ -268,7 +290,7 @@ class DualEmulatorInstrumentedTest {
                     edited.compress(Bitmap.CompressFormat.JPEG, 90, output)
                     edited.recycle()
                 }
-                val edited = actualMedia(old.contentUri)
+                val edited = actualMedia(old.contentUri, settle = true)
                 assertNotEquals(old.modifiedGeneration, edited.modifiedGeneration)
                 GallerySyncEngine(context).use { engine ->
                     engine.foreground = true

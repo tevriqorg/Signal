@@ -66,7 +66,17 @@ interrupt_transfer() {
     [[ "$progress" =~ ^[0-9]+$ ]] && [[ "$progress" -ge 1048576 ]] && break
     sleep 0.5
   done
-  [[ "$progress" =~ ^[0-9]+$ ]] && [[ "$progress" -ge 1048576 ]]
+  if ! [[ "$progress" =~ ^[0-9]+$ ]] || [[ "$progress" -lt 1048576 ]]; then
+    cat "dual-evidence/$role-$task.txt"
+    echo "FAIL: no confirmed in-flight bytes; fault injection was not performed"
+    adb -s "$serial" logcat -d > "dual-evidence/$role-$task-failure-logcat.txt"
+    wait "$process" || true
+    return 1
+  fi
+  if ! kill -0 "$process" 2>/dev/null; then
+    echo "FAIL: transfer already ended before interruption"
+    return 1
+  fi
   printf '%s %s bytes=%s: remove active network forward then force-stop real APK\n' "$role" "$task" "$progress" | tee "dual-evidence/$role-$task-interruption.txt"
   adb -s "$serial" reverse --remove tcp:8765
   sleep 1
