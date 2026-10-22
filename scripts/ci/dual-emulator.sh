@@ -45,15 +45,34 @@ phase() {
   grep -q 'OK (1 test)' "dual-evidence/$role-$task.txt"
   ! grep -qE 'FAILURES|INSTRUMENTATION_FAILED|Process crashed' "dual-evidence/$role-$task.txt"
 }
+interrupt_transfer() {
+  local role="$1" task="$2" serial=emulator-5554
+  [[ "$role" == B ]] && serial=emulator-5556
+  adb -s "$serial" shell input keyevent KEYCODE_WAKEUP
+  adb -s "$serial" shell wm dismiss-keyguard
+  adb -s "$serial" shell am instrument -w -r -e class com.wb.signalpro.photos.DualEmulatorInstrumentedTest -e role "$role" -e phase "$task" com.wb.signalpro.test/androidx.test.runner.AndroidJUnitRunner > "dual-evidence/$role-$task.txt" 2>&1 &
+  local process=$! progress=0
+  for attempt in $(seq 1 120); do
+    progress=$(adb -s "$serial" shell run-as com.wb.signalpro cat "files/dual-$task.progress" 2>/dev/null | tr -d '\r' || true)
+    [[ "$progress" =~ ^[0-9]+$ ]] && [[ "$progress" -ge 1048576 ]] && break
+    sleep 0.5
+  done
+  [[ "$progress" =~ ^[0-9]+$ ]] && [[ "$progress" -ge 1048576 ]]
+  printf '%s %s bytes=%s: remove active network forward then force-stop real APK\n' "$role" "$task" "$progress" | tee "dual-evidence/$role-$task-interruption.txt"
+  adb -s "$serial" reverse --remove tcp:8765
+  sleep 1
+  adb -s "$serial" shell am force-stop com.wb.signalpro
+  wait "$process" || true
+  adb -s "$serial" reverse tcp:8765 tcp:8765
+}
 command -v ffmpeg >/dev/null || { sudo apt-get update -qq; sudo apt-get install -y ffmpeg; }
 ffmpeg -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=640x360:rate=24' -t 36 -c:v libx264 -preset ultrafast -b:v 32M -minrate 32M -maxrate 32M -bufsize 32M -x264-params nal-hrd=cbr -pix_fmt yuv420p "$RUNNER_TEMP/signal-large.mp4"
 stat -c '%s' "$RUNNER_TEMP/signal-large.mp4" > dual-evidence/video-size.txt
 adb -s emulator-5554 push "$RUNNER_TEMP/signal-large.mp4" /sdcard/Download/signal-large.mp4
 phase A publish-video
-adb -s emulator-5554 shell am force-stop com.wb.signalpro
+interrupt_transfer A interrupt-upload
 phase A resume-video
-phase B partial-video
-adb -s emulator-5556 shell am force-stop com.wb.signalpro
+interrupt_transfer B interrupt-download
 phase B receive-video
 phase A publish
 phase B receive
@@ -90,9 +109,12 @@ done
 # Exercise actual WorkManager/JobScheduler, including Doze deferral and later OS execution.
 for role in A B; do
   serial=emulator-5554; [[ "$role" == B ]] && serial=emulator-5556
+  phase "$role" background-seed
+  adb -s "$serial" shell input keyevent KEYCODE_SLEEP
   adb -s "$serial" shell dumpsys battery unplug
   adb -s "$serial" shell dumpsys deviceidle force-idle
-  phase "$role" background-seed
+  adb -s "$serial" shell dumpsys deviceidle get deep | tee "dual-evidence/$role-idle-state.txt"
+  grep -q IDLE "dual-evidence/$role-idle-state.txt"
   adb -s "$serial" shell am kill com.wb.signalpro
   adb -s "$serial" shell dumpsys deviceidle unforce
   adb -s "$serial" shell dumpsys battery reset

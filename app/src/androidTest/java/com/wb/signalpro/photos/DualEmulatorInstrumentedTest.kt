@@ -112,26 +112,30 @@ class DualEmulatorInstrumentedTest {
                 assertFalse(all(client).first { it.id == id }.originalReady)
                 context.getSharedPreferences("dual-video", 0).edit().putString("uri", uri.toString()).commit()
             }
-            "resume-video" -> {
+            "resume-video", "interrupt-upload" -> {
                 val uri = context.getSharedPreferences("dual-video", 0).getString("uri", null)!!
                 val item = MediaItem(MediaId("dual-video-$role"), 2, uri, MediaType.VIDEO,
                     1790000000000, 1790000000000, 1, "video/mp4", 640, 360, 36000, "Movies/SignalDual/", "dual-large-$role.mp4")
                 val client = client()
                 val id = all(client).first { it.fileName == "dual-large-$role.mp4" }.id
                 var initial = -1L
-                client.uploadOriginal(item, id, { true }) { done, _ -> if (initial < 0) initial = done }
+                client.uploadOriginal(item, id, { true }) { done, _ ->
+                    if (initial < 0) initial = done
+                    if (phase == "interrupt-upload") {
+                        File(context.filesDir, "dual-interrupt-upload.progress").writeText(done.toString())
+                        Thread.sleep(25)
+                    }
+                }
                 assertTrue("must resume past first MiB", initial > 1024 * 1024)
                 assertTrue(all(client).first { it.id == id }.originalReady)
             }
-            "partial-video" -> {
+            "interrupt-download" -> {
                 val client = client()
                 val media = all(client).first { it.fileName.startsWith("dual-large-") }
-                // Abort at an actual streaming callback; persistent partial must survive host force-stop.
-                assertTrue(runCatching {
-                    client.fetchOriginal(media) { done, _ -> if (done >= 1024 * 1024) error("synthetic connection interrupted") }
-                }.isFailure)
-                val partial = File(File(context.filesDir, "gallery-originals"), media.id + "." + media.sha256 + ".part")
-                assertTrue(partial.length() >= 1024 * 1024)
+                client.fetchOriginal(media) { done, _ ->
+                    File(context.filesDir, "dual-interrupt-download.progress").writeText(done.toString())
+                    Thread.sleep(25)
+                }
             }
             "receive-video" -> {
                 val client = client()
