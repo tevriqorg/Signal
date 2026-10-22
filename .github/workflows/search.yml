@@ -1,0 +1,33 @@
+name: Real OCR and multilingual visual search
+on:
+  push:
+    branches: ['feature/**', 'fix/**', main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  real-ai:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install binary runtime and actual OCR
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-jpn tesseract-ocr-chi-sim fonts-dejavu-core
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -r server/requirements-ai.txt
+      - name: Real model inference on generated fixtures
+        env:
+          SIGNAL_TEST_AI: '1'
+        run: |
+          set -o pipefail
+          python3 -m unittest discover -s server -p test_search_index.py -v 2>&1 | tee search-evidence.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: actual-ocr-visual-search-${{ github.sha }}
+          path: search-evidence.txt

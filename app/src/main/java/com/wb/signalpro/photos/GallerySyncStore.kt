@@ -19,6 +19,7 @@ internal data class RemotePhoto(
     val originalReady: Boolean,
     val revision: Long,
     val deleted: Boolean = false,
+    val matchReasons: String = "",
 ) {
     val isVideo: Boolean get() = kind == "video"
     companion object {
@@ -36,6 +37,7 @@ internal data class RemotePhoto(
             originalReady = j.optBoolean("original_ready"),
             revision = j.optLong("revision"),
             deleted = j.optBoolean("deleted"),
+            matchReasons = j.optJSONArray("match_reasons")?.toString() ?: "",
         )
     }
 }

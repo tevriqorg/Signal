@@ -78,6 +78,7 @@ class MediaService:
             if "revoked" not in device_columns:
                 db.execute("ALTER TABLE devices ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0")
             db.commit()
+        self.ai = None
         self.quota_bytes = int(os.environ.get("SIGNAL_STORAGE_QUOTA_BYTES", str(1024 ** 4)))
 
     def rotate_device(self, device):
@@ -478,7 +479,7 @@ def make_handler(service: MediaService):
             parts = [p for p in url.path.split("/") if p]
             if self.command == "GET" and parts == ["health"]:
                 return self.json_reply(200, {"status": "ok", "protocol": "signal-media-v1",
-                                             "search": "metadata", "ai_vision": False})
+                                             "search": "multilingual-clip-ocr" if service.ai else "metadata", "ai_vision": bool(service.ai)})
             if self.command == "POST" and parts == ["v1", "devices"]:
                 return self.json_reply(201, service.enroll(self.headers.get("X-Enrollment-Key", ""), self.json_body()))
             if self.command == "POST" and len(parts) == 4 and parts[:2] == ["v1", "devices"] and parts[3] == "revoke":
@@ -498,6 +499,8 @@ def make_handler(service: MediaService):
                 except ValueError:
                     raise ApiError(400, "invalid cursor")
                 search = params.get("q", [""])[0].strip()[:200] if parts[-1] == "search" else ""
+                if parts[-1] == "search" and service.ai:
+                    return self.json_reply(200, service.ai.search(search, cursor, limit))
                 return self.json_reply(200, service.catalog(cursor, limit, search))
             if self.command == "PUT" and len(parts) == 4 and parts[:2] == ["v1", "media"] and parts[3] == "thumbnail":
                 data = self.body(MAX_THUMB)
@@ -542,6 +545,19 @@ def serve():
     if not secret:
         raise RuntimeError("SIGNAL_ENROLL_TOKEN is required; do not store it in git")
     service = MediaService(data, secret)
+    if os.environ.get("SIGNAL_AI_ENABLED") == "1":
+        from search_index import MediaSearchIndex
+        service.ai = MediaSearchIndex(service)
+        def analyze():
+            import time
+            while True:
+                try:
+                    service.ai.index_pending()
+                except Exception:
+                    # Private media/paths and exception strings never enter logs.
+                    pass
+                time.sleep(5)
+        threading.Thread(target=analyze, daemon=True).start()
     server = ThreadingHTTPServer((bind, port), make_handler(service))
     try:
         server.serve_forever()

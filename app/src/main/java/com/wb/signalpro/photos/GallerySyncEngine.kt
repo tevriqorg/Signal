@@ -143,7 +143,15 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
     }
 
     suspend fun search(query: String): List<RemotePhoto> = withContext(Dispatchers.IO) {
-        client.catalog(0, query).items
+        val items = linkedMapOf<String, RemotePhoto>()
+        var cursor = 0L
+        while (true) {
+            val page = client.catalog(cursor, query)
+            page.items.filter { !it.deleted }.forEach { items[it.id] = it }
+            if (page.items.size < 200 || page.cursor == cursor) break
+            cursor = page.cursor
+        }
+        items.values.toList()
     }
 
     suspend fun loadOriginal(media: RemotePhoto, progress: (Long, Long) -> Unit) =

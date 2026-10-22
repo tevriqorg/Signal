@@ -504,7 +504,7 @@ private fun GalleryScreen(
                 Column {
                     OutlinedTextField(value = query, onValueChange = { query = it },
                         label = { Text("关键词") }, singleLine = true)
-                    Text("当前支持文件名、设备名和元数据检索；AI 视觉理解尚未接入。",
+                    Text("搜索时间、设备、文字和画面；可用能力取决于服务器索引状态。",
                         color = Subtle, fontSize = 11.sp)
                     state.searchError?.let { Text(it, color = Red, fontSize = 11.sp) }
                 }
@@ -537,7 +537,8 @@ private fun GalleryScreen(
                 confirmButton = { TextButton(onClick = { remoteSelected = null }) { Text("关闭") } })
         } else {
             MediaViewer("file://" + file.absolutePath,
-                media.deviceName + " · " + media.fileName, "完整原件已缓存",
+                media.deviceName + " · " + media.fileName,
+                if (media.matchReasons.isBlank()) "完整原件已缓存" else "匹配依据：" + media.matchReasons,
                 onClose = { remoteSelected = null }, isVideo = media.isVideo,
                 onOpenVideo = {
                     val video = android.widget.VideoView(context)
