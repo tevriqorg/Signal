@@ -67,6 +67,7 @@ import com.wb.signalpro.photos.GalleryDot
 import com.wb.signalpro.photos.GalleryOrigin
 import com.wb.signalpro.photos.GallerySource
 import com.wb.signalpro.photos.GallerySyncEngine
+import com.wb.signalpro.photos.GalleryBackgroundScheduler
 import com.wb.signalpro.photos.GallerySyncSnapshot
 import com.wb.signalpro.photos.GalleryTransferBadge
 import com.wb.signalpro.photos.GalleryTransferState
@@ -132,6 +133,7 @@ class GalleryActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         sync.foreground = true
+        if (sync.client.paired) GalleryBackgroundScheduler.schedule(this)
         observer = coordinator.newObserver { refresh(false) }.also { it.register() }
     }
 
@@ -190,6 +192,7 @@ class GalleryActivity : ComponentActivity() {
             runCatching { sync.pair(url, key, name) }
                 .onSuccess {
                     ui = ui.copy(sync = it)
+                    GalleryBackgroundScheduler.schedule(this@GalleryActivity)
                     startSync(ui.items)
                 }.onFailure {
                     ui = ui.copy(sync = ui.sync.copy(healthy = false,

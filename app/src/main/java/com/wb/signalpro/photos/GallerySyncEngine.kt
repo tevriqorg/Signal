@@ -27,6 +27,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
     val client = SignalMediaClient(app)
     private val store = GallerySyncStore(app)
     @Volatile var foreground = false
+    @Volatile var allowBackgroundImages = false
     @Volatile var cancelled = false
 
     private fun fastWifi(): Boolean {
@@ -75,7 +76,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
 
             var touched = 0
             for (media in items) {
-                if (cancelled || !foreground || touched >= 100) break
+                if (cancelled || (!foreground && !allowBackgroundImages) || touched >= 250) break
                 val old = store.local(media.id.value)
                 if (old?.verified == true) continue
                 if (old?.failed == true) {
@@ -90,15 +91,15 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                         onUpdate(snapshot(true, "基础信息已同步，等待原件"))
                         runCatching { client.uploadThumbnail(media, mediaId) }
                     }
-                    val allowed = media.mediaType != MediaType.VIDEO || fastWifi()
+                    val allowed = media.mediaType != MediaType.VIDEO || (foreground && fastWifi())
                     if (!allowed) continue
                     val confirmedId = mediaId ?: continue
                     client.uploadOriginal(media, confirmedId,
-                        shouldContinue = { foreground && !cancelled },
+                        shouldContinue = { !cancelled && (foreground || (allowBackgroundImages && media.mediaType != MediaType.VIDEO)) },
                         progress = { done, total ->
                             onUpdate(snapshot(true, "正在传输原件", done, total, media.displayName ?: "照片"))
                         })
-                    if (!cancelled && foreground) {
+                    if (!cancelled && (foreground || (allowBackgroundImages && media.mediaType != MediaType.VIDEO))) {
                         store.saveLocal(media.id.value, confirmedId, verified = true)
                         onUpdate(snapshot(true, "原件已通过服务端校验"))
                     }
