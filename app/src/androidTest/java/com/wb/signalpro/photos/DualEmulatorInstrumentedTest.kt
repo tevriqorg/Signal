@@ -218,7 +218,7 @@ class DualEmulatorInstrumentedTest {
                     assertEquals(1, state.pendingUploads)
                     assertFalse("background worker must not upload a video original", all(client).first { it.id == id }.originalReady)
                     var observedOffset = -1L
-                    client.uploadOriginal(item, id, { false }) { done, _ -> observedOffset = done }
+                    client.uploadOriginal(item, id, { observedOffset < 0 }) { done, _ -> observedOffset = done }
                     assertEquals("background metadata reconciliation cannot advance original bytes", stopAt, observedOffset)
                 }
                 context.getSharedPreferences("dual-video", 0).edit().putString("uri", uri.toString()).putString("source-version", item.toString()).commit()
