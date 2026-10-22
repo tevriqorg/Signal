@@ -2,7 +2,7 @@
 set -euo pipefail
 mkdir -p dual-evidence
 # Build only on GitHub's hosted runner, before booting the second emulator.
-gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace > dual-evidence/build.log 2>&1
+timeout 12m gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace > dual-evidence/build.log 2>&1
 export SIGNAL_ENROLL_TOKEN=synthetic-test-enrollment-secret
 export SIGNAL_DATA_DIR="$RUNNER_TEMP/signal-dual-data"
 export SIGNAL_BIND=127.0.0.1
@@ -13,7 +13,7 @@ trap 'kill "$srv" 2>/dev/null || true; adb -s emulator-5556 emu kill >/dev/null 
 avdmanager create avd --force --name signal-peer --package 'system-images;android-35;google_apis;x86_64' --device pixel_6 <<< no
 "$ANDROID_HOME/emulator/emulator" -avd signal-peer -port 5556 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -memory 1536 > dual-evidence/emulator-B.log 2>&1 &
 for serial in emulator-5554 emulator-5556; do
-  adb -s "$serial" wait-for-device
+  timeout 180s adb -s "$serial" wait-for-device
   for attempt in $(seq 1 180); do
     [[ "$(adb -s "$serial" shell getprop sys.boot_completed | tr -d '\r')" == 1 ]] && break
     sleep 2
@@ -38,7 +38,7 @@ phase() {
   [[ "$role" == B ]] && serial=emulator-5556
   adb -s "$serial" shell input keyevent KEYCODE_WAKEUP
   adb -s "$serial" shell wm dismiss-keyguard
-  adb -s "$serial" shell am instrument -w -r -e class com.wb.signalpro.photos.DualEmulatorInstrumentedTest -e role "$role" -e phase "$task" com.wb.signalpro.test/androidx.test.runner.AndroidJUnitRunner | tee "dual-evidence/$role-$task.txt"
+  timeout 180s adb -s "$serial" shell am instrument -w -r -e class com.wb.signalpro.photos.DualEmulatorInstrumentedTest -e role "$role" -e phase "$task" com.wb.signalpro.test/androidx.test.runner.AndroidJUnitRunner | tee "dual-evidence/$role-$task.txt"
   adb -s "$serial" logcat -d > "dual-evidence/$role-$task-logcat.txt"
   adb -s "$serial" shell screencap -p /sdcard/dual-phase.png
   adb -s "$serial" pull /sdcard/dual-phase.png "dual-evidence/$role-$task.png"
@@ -50,7 +50,7 @@ interrupt_transfer() {
   [[ "$role" == B ]] && serial=emulator-5556
   adb -s "$serial" shell input keyevent KEYCODE_WAKEUP
   adb -s "$serial" shell wm dismiss-keyguard
-  adb -s "$serial" shell am instrument -w -r -e class com.wb.signalpro.photos.DualEmulatorInstrumentedTest -e role "$role" -e phase "$task" com.wb.signalpro.test/androidx.test.runner.AndroidJUnitRunner > "dual-evidence/$role-$task.txt" 2>&1 &
+  timeout 180s adb -s "$serial" shell am instrument -w -r -e class com.wb.signalpro.photos.DualEmulatorInstrumentedTest -e role "$role" -e phase "$task" com.wb.signalpro.test/androidx.test.runner.AndroidJUnitRunner > "dual-evidence/$role-$task.txt" 2>&1 &
   local process=$! progress=0
   for attempt in $(seq 1 120); do
     progress=$(adb -s "$serial" shell run-as com.wb.signalpro cat "files/dual-$task.progress" 2>/dev/null | tr -d '\r' || true)
@@ -66,7 +66,7 @@ interrupt_transfer() {
   adb -s "$serial" reverse tcp:8765 tcp:8765
 }
 command -v ffmpeg >/dev/null || { sudo apt-get update -qq; sudo apt-get install -y ffmpeg; }
-ffmpeg -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=640x360:rate=24' -t 36 -c:v libx264 -preset ultrafast -b:v 32M -minrate 32M -maxrate 32M -bufsize 32M -x264-params nal-hrd=cbr -pix_fmt yuv420p "$RUNNER_TEMP/signal-large.mp4"
+timeout 180s ffmpeg -nostdin -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=640x360:rate=24' -t 36 -c:v libx264 -preset veryfast -profile:v high -level:v 4.1 -b:v 32M -minrate 32M -maxrate 32M -bufsize 32M -x264-params nal-hrd=cbr -pix_fmt yuv420p "$RUNNER_TEMP/signal-large.mp4"
 stat -c '%s' "$RUNNER_TEMP/signal-large.mp4" > dual-evidence/video-size.txt
 adb -s emulator-5554 push "$RUNNER_TEMP/signal-large.mp4" /sdcard/Download/signal-large.mp4
 phase A publish-video

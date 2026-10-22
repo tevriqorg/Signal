@@ -131,7 +131,12 @@ internal class SignalMediaClient(private val context: Context) {
 
     fun uploadThumbnail(item: MediaItem, mediaId: String) {
         val credential = pair()
-        val preview = context.contentResolver.loadThumbnail(Uri.parse(item.contentUri), Size(320, 320), null)
+        val cancellation = android.os.CancellationSignal()
+        val timer = java.util.Timer("gallery-thumbnail-timeout", true)
+        timer.schedule(object : java.util.TimerTask() { override fun run() { cancellation.cancel() } }, 30_000)
+        val preview = try {
+            context.contentResolver.loadThumbnail(Uri.parse(item.contentUri), Size(320, 320), cancellation)
+        } finally { timer.cancel() }
         val output = ByteArrayOutputStream()
         check(preview.compress(Bitmap.CompressFormat.JPEG, 75, output))
         val bytes = output.toByteArray()
