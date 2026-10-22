@@ -342,8 +342,14 @@ private fun GalleryScreen(
     var remoteSelected by remember { mutableStateOf<RemotePhoto?>(null) }
 
     val remote = state.searchResults ?: state.sync.remote
-    val tiles = remember(state.items, remote, filter) {
-        (state.items.map { Tile.Local(it) } + remote.map { Tile.Remote(it) })
+    val tiles = remember(state.items, state.sync.local, remote, state.searchResults, filter) {
+        val localByServerId = state.items.mapNotNull { item ->
+            state.sync.local[item.id.value]?.mediaId?.let { it to item }
+        }.toMap()
+        val selected: List<Tile> = if (state.searchResults != null) remote.map { media ->
+            localByServerId[media.id]?.let { Tile.Local(it) } ?: Tile.Remote(media)
+        } else (state.items.map { Tile.Local(it) } + remote.map { Tile.Remote(it) }).sortedByDescending { it.time }
+        selected
             .filter {
                 val kind = when (it) {
                     is Tile.Local -> it.item.mediaType.name.lowercase()
@@ -354,7 +360,7 @@ private fun GalleryScreen(
                     "截图" -> kind == "screenshot"
                     else -> kind != "video"
                 }
-            }.sortedByDescending { it.time }
+            }
     }
 
     Surface(color = Color.White, modifier = Modifier.fillMaxSize()) {

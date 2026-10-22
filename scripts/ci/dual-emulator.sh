@@ -6,6 +6,8 @@ timeout 12m gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace
 export SIGNAL_ENROLL_TOKEN=synthetic-test-enrollment-secret
 export SIGNAL_DATA_DIR="$RUNNER_TEMP/signal-dual-data"
 export SIGNAL_BIND=127.0.0.1
+export SIGNAL_AI_ENABLED=1
+export SIGNAL_AI_INT8=1
 python3 server/signal_server.py > dual-evidence/server.log 2>&1 &
 srv=$!
 trap 'kill "$srv" 2>/dev/null || true; adb -s emulator-5556 emu kill >/dev/null 2>&1 || true' EXIT
@@ -33,6 +35,11 @@ for serial in emulator-5554 emulator-5556; do
 done
 adb devices -l > dual-evidence/devices.txt
 [[ $(adb devices | grep -c '^emulator-.*device$') -eq 2 ]]
+for attempt in $(seq 1 120); do
+  curl -fsS http://127.0.0.1:8765/health > dual-evidence/health.json 2>/dev/null && break
+  sleep 2
+done
+python3 -c 'import json; assert json.load(open("dual-evidence/health.json"))["ai_vision"] is True'
 phase_counter=0
 phase() {
   local role="$1" task="$2" serial=emulator-5554

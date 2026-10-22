@@ -84,7 +84,10 @@ class MediaSearchIndex:
             try: date = datetime.strptime(iso.group(1), "%Y-%m-%d").date()
             except ValueError: pass
         matches = []
+        filename_query = bool(re.search(r"\.(?:jpg|jpeg|png|webp|heic|mp4|mov)$", query, re.I))
         for row in rows:
+            if filename_query and query.casefold() not in (row["filename"] or "").casefold():
+                continue
             reasons = []
             if date:
                 if row["captured_at"] is None or datetime.fromtimestamp(row["captured_at"] / 1000, zone).date() != date:

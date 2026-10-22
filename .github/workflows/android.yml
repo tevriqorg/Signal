@@ -122,6 +122,15 @@ jobs:
       - uses: gradle/actions/setup-gradle@v5
         with:
           gradle-version: '9.6.0'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install actual server-side OCR and CPU vision runtime
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-jpn tesseract-ocr-chi-sim fonts-dejavu-core
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -r server/requirements-ai.txt
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules

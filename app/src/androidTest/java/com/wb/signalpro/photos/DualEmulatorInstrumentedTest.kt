@@ -102,6 +102,37 @@ class DualEmulatorInstrumentedTest {
                     val device = UiDevice.getInstance(instrumentation)
                     assertTrue(device.wait(Until.hasObject(By.text("照片")), 15000))
                     assertTrue(device.wait(Until.hasObject(By.textContains("Emulator-$peer")), 15000))
+                    // Query the actual Signal Server OCR/vision index from the installed Android APK.
+                    val deadline = System.currentTimeMillis() + 60000
+                    var visual: List<RemotePhoto> = emptyList()
+                    while (System.currentTimeMillis() < deadline) {
+                        visual = client.catalog(0, "红色的方块").items
+                        if (visual.any { it.fileName == "dual-A.jpg" }) break
+                        Thread.sleep(1000)
+                    }
+                    val red = visual.indexOfFirst { it.fileName == "dual-A.jpg" }
+                    val blue = visual.indexOfFirst { it.fileName == "dual-B.jpg" }
+                    assertTrue("real multilingual visual index must return the generated red image", red >= 0)
+                    assertTrue(blue < 0 || red < blue)
+                    assertTrue(visual[red].matchReasons.isNotBlank())
+                    fun searchUi(text: String) {
+                        device.findObject(By.text("···")).click()
+                        assertTrue(device.wait(Until.hasObject(By.text("搜索相册")), 8000))
+                        device.findObject(By.text("搜索相册")).click()
+                        assertTrue(device.wait(Until.hasObject(By.clazz("android.widget.EditText")), 8000))
+                        device.findObject(By.clazz("android.widget.EditText")).text = text
+                        device.findObject(By.text("搜索")).click()
+                    }
+                    searchUi("no-such-synthetic-123.jpg")
+                    assertTrue(device.wait(Until.hasObject(By.text("当前还没有这一类照片")), 15000))
+                    assertFalse(device.hasObject(By.desc("dual-$role.jpg")))
+                    searchUi("dual-$peer.jpg")
+                    assertTrue(device.wait(Until.hasObject(By.desc("dual-$peer.jpg")), 15000))
+                    assertFalse("search must not retain unrelated local photos", device.hasObject(By.desc("dual-$role.jpg")))
+                    device.findObject(By.text("···")).click()
+                    device.findObject(By.text("搜索相册")).click()
+                    device.findObject(By.text("清除筛选")).click()
+                    assertTrue(device.wait(Until.hasObject(By.desc("dual-$role.jpg")), 15000))
                     assertTrue(device.takeScreenshot(File(context.getExternalFilesDir(null), "dual-$role.png")))
                 } finally { activity.finish() }
             }
