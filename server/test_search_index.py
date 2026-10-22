@@ -23,7 +23,10 @@ class RealSearchTest(unittest.TestCase):
                 image = Image.new("RGB", (640, 480), color)
                 if label == "text":
                     draw = ImageDraw.Draw(image)
-                    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 64)
+                    try:
+                        font = ImageFont.truetype("DejaVuSans.ttf", 64)
+                    except OSError:
+                        font = ImageFont.load_default(size=64)
                     draw.text((25, 180), "TOKYO 2026", font=font, fill="black")
                 stream = io.BytesIO()
                 image.save(stream, "PNG")

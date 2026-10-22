@@ -101,6 +101,7 @@ class GalleryActivity : ComponentActivity() {
     private lateinit var coordinator: MediaIndexCoordinator
     private lateinit var sync: GallerySyncEngine
     private var observer: MediaChangeObserver? = null
+    private var syncRequested = false
     private var networkObserver: android.net.ConnectivityManager.NetworkCallback? = null
     private val scope = MainScope()
     private var ui by mutableStateOf(GalleryUiState())
@@ -209,14 +210,20 @@ class GalleryActivity : ComponentActivity() {
     }
 
     private fun startSync(items: List<MediaItem>) {
-        if (ui.syncRunning) return
+        if (ui.syncRunning) { syncRequested = true; return }
         scope.launch {
             ui = ui.copy(syncRunning = true)
             try {
                 sync.synchronize(items) { snapshot ->
                     scope.launch { ui = ui.copy(sync = snapshot) }
                 }
-            } finally { ui = ui.copy(syncRunning = false) }
+            } finally {
+                ui = ui.copy(syncRunning = false)
+                if (syncRequested && sync.foreground) {
+                    syncRequested = false
+                    startSync(ui.items)
+                }
+            }
         }
     }
 

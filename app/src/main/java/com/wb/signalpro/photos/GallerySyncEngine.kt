@@ -10,6 +10,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 internal data class DeviceMediaProgress(val name: String, val ready: Int, val total: Int, val bytes: Long)
 
@@ -30,6 +32,16 @@ internal data class GallerySyncSnapshot(
 
 /** Foreground opportunity sync. The service is the only server; no AIBOX adapter exists. */
 internal class GallerySyncEngine(context: Context) : AutoCloseable {
+    companion object { private val transferMutex = Mutex() }
+    private val lifecycleLock = Any()
+    private var activeTransfers = 0
+    private fun beginTransfer(): Boolean = synchronized(lifecycleLock) {
+        if (cancelled) false else { activeTransfers++; true }
+    }
+    private fun endTransfer() = synchronized(lifecycleLock) {
+        activeTransfers--
+        if (cancelled && activeTransfers == 0) store.close()
+    }
     private val app = context.applicationContext
     val client = SignalMediaClient(app)
     private val store = GallerySyncStore(app)
@@ -73,7 +85,9 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
     }
 
     suspend fun synchronize(items: List<MediaItem>, onUpdate: (GallerySyncSnapshot) -> Unit) =
-        withContext(Dispatchers.IO) {
+        withContext(Dispatchers.IO) { transferMutex.withLock {
+            if (!beginTransfer()) return@withContext
+            try {
             val job = currentCoroutineContext()[Job]
             knownItems = items
             if (!client.paired) {
@@ -153,7 +167,8 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                 onUpdate(snapshot(!failed && store.localSnapshot().values.none { it.failed },
                     if (failed) "有项目需要重试" else "同步系统正常"))
             }
-        }
+            } finally { endTransfer() }
+        } }
 
     private fun isTransient(error: Exception): Boolean = error is java.io.IOException ||
         (error is SignalHttpError && (error.status == 408 || error.status == 429 || error.status >= 500 && error.status != 507))
@@ -188,5 +203,8 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
         catch (error: Exception) { if (media.thumbReady) remoteFailure(media.id, true, "preview"); throw error }
     }
 
-    override fun close() { cancelled = true; store.close() }
+    override fun close() = synchronized(lifecycleLock) {
+        cancelled = true
+        if (activeTransfers == 0) store.close()
+    }
 }
