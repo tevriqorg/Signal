@@ -69,6 +69,45 @@ class GalleryRecoveryInstrumentedTest {
         Unit
     }
 
+    @Test fun staleCatalogReplayCannotRollbackRevisionOrCursor() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val name = "signal-gallery-replay-test.db"
+        context.deleteDatabase(name)
+        val id = java.util.UUID.randomUUID().toString()
+        val current = RemotePhoto.parse(org.json.JSONObject().put("media_id", id).put("origin_device_id", "peer")
+            .put("device_name", "Peer").put("revision", 20).put("original_ready", false))
+        GallerySyncStore(context, name).use { store ->
+            store.saveLocal("local", id, verified = true)
+            store.ingest(listOf(current), 20)
+            store.ingest(listOf(current.copy(revision = 10, originalReady = true)), 10)
+        }
+        GallerySyncStore(context, name).use { store ->
+            assertEquals(20L, store.cursor())
+            assertFalse(store.allCatalog().first { it.id == id }.originalReady)
+            assertFalse(store.local("local")!!.verified)
+        }
+        context.deleteDatabase(name)
+    }
+
+    @Test fun originalDisplayIsBoundedAndOrientationCorrectWithoutChangingStoredBytes() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val file = java.io.File(context.cacheDir, "synthetic-display.jpg")
+        val source = android.graphics.Bitmap.createBitmap(4096, 3072, android.graphics.Bitmap.Config.ARGB_8888)
+        source.eraseColor(android.graphics.Color.GREEN)
+        file.outputStream().use { source.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, it) }
+        source.recycle()
+        val exif = android.media.ExifInterface(file.absolutePath)
+        exif.setAttribute(android.media.ExifInterface.TAG_ORIENTATION, android.media.ExifInterface.ORIENTATION_ROTATE_90.toString())
+        exif.saveAttributes()
+        val original = java.security.MessageDigest.getInstance("SHA-256").digest(file.readBytes())
+        val decoded = decodeGalleryImage(file, 1200)
+        assertTrue(maxOf(decoded.width, decoded.height) <= 1200)
+        assertTrue(decoded.height > decoded.width)
+        decoded.recycle()
+        assertArrayEquals(original, java.security.MessageDigest.getInstance("SHA-256").digest(file.readBytes()))
+        file.delete()
+    }
+
     @Test fun videoNotificationIsPermissionAwareAndThrottled() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext

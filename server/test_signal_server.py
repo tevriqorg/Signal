@@ -230,6 +230,47 @@ class SignalServerIntegrationTest(unittest.TestCase):
         self.assertEqual(ids, {item["media_id"] for item in catalog["items"]})
         self.assertTrue(all(item["original_ready"] for item in catalog["items"]))
 
+    def test_damaged_stored_original_is_invalidated_and_repaired_not_falsely_deduplicated(self):
+        media = self.make_photo()
+        payload = b"synthetic-repairable-original"
+        sha = hashlib.sha256(payload).hexdigest()
+        _, session = self.call("POST", "/v1/uploads", {"media_id": media, "size": len(payload), "sha256": sha}, token=self.device_a)
+        self.call("PUT", "/v1/uploads/" + session["upload_id"], payload, token=self.device_a, headers={"X-Offset": "0"})
+        (Path(self.temp.name) / "objects" / sha).write_bytes(b"x" * len(payload))
+        code, _ = self.call("GET", f"/v1/media/{media}/original", token=self.device_b)
+        self.assertEqual(503, code)
+        self.assertFalse(self.service.item(media)["original_ready"])
+        code, status = self.call("GET", "/v1/status", token=self.device_a)
+        self.assertEqual(1, status["storage_failures"])
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "damaged"
+            with self.assertRaises(ValueError): self.service.backup(destination)
+            self.assertFalse((destination / "manifest.json").exists())
+        code, repair = self.call("POST", "/v1/uploads", {"media_id": media, "size": len(payload), "sha256": sha}, token=self.device_a)
+        self.assertEqual(200, code)
+        self.assertFalse(repair["complete"])
+        code, complete = self.call("PUT", "/v1/uploads/" + repair["upload_id"], payload, token=self.device_a, headers={"X-Offset": "0"})
+        self.assertEqual(200, code)
+        self.assertTrue(complete["complete"])
+        self.assertEqual(payload, self.call("GET", f"/v1/media/{media}/original", token=self.device_b)[1])
+        self.assertEqual(0, self.service.storage_failures())
+
+    def test_catalog_cursor_is_distinct_from_current_asset_revision(self):
+        one = self.make_photo()
+        self.make_photo()
+        two = self.make_photo(owner="b", key="second")
+        first = self.service.catalog(0, 1)
+        self.assertEqual(1, first["next_cursor"])
+        self.assertEqual(2, first["items"][0]["revision"])
+        cursor, seen = 0, set()
+        while True:
+            page = self.service.catalog(cursor, 1)
+            seen.update(item["media_id"] for item in page["items"])
+            if not page["items"]: break
+            self.assertGreater(page["next_cursor"], cursor)
+            cursor = page["next_cursor"]
+        self.assertEqual({one, two}, seen)
+
     def test_bad_hash_rolls_back_and_owner_only_upload(self):
         photo = self.make_photo()
         code, upload = self.call("POST", "/v1/uploads", {"media_id": photo, "size": 5, "sha256": "a"*64}, token=self.device_a)

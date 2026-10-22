@@ -45,10 +45,10 @@ internal class GalleryBackgroundWorker(context: Context, params: WorkerParameter
 }
 
 internal object GalleryBackgroundScheduler {
-    fun catchUp(context: Context) {
+    fun catchUp(context: Context): androidx.work.Operation {
         val request = OneTimeWorkRequestBuilder<GalleryBackgroundWorker>()
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
-        WorkManager.getInstance(context).enqueueUniqueWork("signal-gallery-catchup", ExistingWorkPolicy.KEEP, request)
+        return WorkManager.getInstance(context).enqueueUniqueWork("signal-gallery-catchup", ExistingWorkPolicy.KEEP, request)
     }
     fun schedule(context: Context) {
         val constraints = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()

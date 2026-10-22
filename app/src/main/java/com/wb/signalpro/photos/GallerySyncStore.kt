@@ -51,7 +51,7 @@ internal data class RemotePhoto(
 }
 internal data class LocalTransfer(val mediaId: String, val verified: Boolean, val failed: Boolean, val sourceVersion: String? = null)
 
-internal class GallerySyncStore(context: Context) : SQLiteOpenHelper(context, "signal-gallery-sync.db", null, 2) {
+internal class GallerySyncStore(context: Context, databaseName: String = "signal-gallery-sync.db") : SQLiteOpenHelper(context, databaseName, null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE local_sync (local_id TEXT PRIMARY KEY, media_id TEXT NOT NULL, verified INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0)")
         db.execSQL("CREATE TABLE remote_catalog (media_id TEXT PRIMARY KEY, json TEXT NOT NULL, revision INTEGER NOT NULL)")
@@ -96,11 +96,15 @@ internal class GallerySyncStore(context: Context) : SQLiteOpenHelper(context, "s
         db.beginTransaction()
         try {
             items.forEach { item ->
+                val revision = db.rawQuery("SELECT revision FROM remote_catalog WHERE media_id=?", arrayOf(item.id)).use {
+                    if (it.moveToFirst()) it.getLong(0) else -1L
+                }
+                if (item.revision < revision) return@forEach
                 db.execSQL("INSERT OR REPLACE INTO remote_catalog(media_id,json,revision) VALUES(?,?,?)",
                     arrayOf(item.id, item.toJson().toString(), item.revision))
-
+                if (!item.originalReady) db.execSQL("UPDATE local_sync SET verified=0 WHERE media_id=?", arrayOf(item.id))
             }
-            db.execSQL("INSERT OR REPLACE INTO progress(key,value) VALUES('catalog',?)", arrayOf(cursor))
+            db.execSQL("INSERT OR REPLACE INTO progress(key,value) VALUES('catalog',?)", arrayOf(maxOf(this.cursor(), cursor)))
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
     }

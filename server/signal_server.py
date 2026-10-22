@@ -98,6 +98,20 @@ class MediaService:
                 self.rate_windows.popitem(last=False)
             return count < 120
 
+    def invalidate_object(self, sha, db=None):
+        if db is None:
+            with self.lock, self.db() as connection:
+                return self.invalidate_object(sha, connection)
+        rows = db.execute("SELECT id FROM assets WHERE original_sha=? AND original_ready=1", (sha,)).fetchall()
+        db.execute("UPDATE assets SET original_ready=0 WHERE original_sha=?", (sha,))
+        for row in rows:
+            db.execute("INSERT INTO changes(asset_id) VALUES (?)", (row["id"],))
+        return len(rows)
+
+    def storage_failures(self):
+        with self.db() as db:
+            return db.execute("SELECT COUNT(*) FROM assets WHERE deleted=0 AND original_ready=0 AND original_sha IS NOT NULL").fetchone()[0]
+
     def rotate_device(self, device):
         token = secrets.token_urlsafe(40)
         with self.lock, self.db() as db:
@@ -129,7 +143,14 @@ class MediaService:
                 source.backup(target)
             for name in ("objects", "thumbs", "staging"):
                 shutil.copytree(self.root / name, destination / name)
-            manifest = {str(p.relative_to(destination)): file_sha(p) for p in destination.rglob("*") if p.is_file()}
+            manifest = {}
+            for path in destination.rglob("*"):
+                if not path.is_file(): continue
+                digest = file_sha(path)
+                if path.parent.name == "objects" and path.name != digest:
+                    raise ValueError("backup contains a damaged original; no acceptance manifest written")
+                with path.open("rb") as handle: os.fsync(handle.fileno())
+                manifest[str(path.relative_to(destination))] = digest
             atomic_save(destination / "manifest.json", json.dumps(manifest, sort_keys=True).encode())
         return manifest
 
@@ -239,12 +260,12 @@ class MediaService:
                 where = where.replace(" LIKE ?", " LIKE ? ESCAPE '\\'")
                 params.extend([pattern, pattern, pattern])
             params.append(limit)
-            rows = db.execute(f"""SELECT c.seq, a.*, d.name AS device_name FROM changes c
+            rows = db.execute(f"""SELECT c.seq AS cursor_seq, a.*, d.name AS device_name, (SELECT MAX(seq) FROM changes WHERE asset_id=a.id) AS seq FROM changes c
                               JOIN assets a ON a.id=c.asset_id JOIN devices d ON d.id=a.device_id
                               {where} ORDER BY c.seq ASC LIMIT ?""", params).fetchall()
         # Delta entries may repeat on metadata update; client upserts by media_id.
         return {"items": [public_item(row) for row in rows],
-                "next_cursor": rows[-1]["seq"] if rows else cursor}
+                "next_cursor": rows[-1]["cursor_seq"] if rows else cursor}
 
     def thumbnail(self, device: sqlite3.Row, media_id: str, data: bytes, sha: str, source_version=None):
         if len(data) < 1 or len(data) > MAX_THUMB or not HEX64.fullmatch(sha):
@@ -286,14 +307,16 @@ class MediaService:
             row = self.item(media_id)
             if body.get("source_version") is not None and body["source_version"] != row["source_version"]:
                 raise ApiError(409, "source revision changed")
-            if row["original_ready"] and row["original_sha"] == sha and row["size"] == size:
-                return {"upload_id": None, "offset": size, "complete": True}
             reusable = self.root / "objects" / sha
-            if reusable.is_file() and reusable.stat().st_size == size and file_sha(reusable) == sha:
+            valid_blob = reusable.is_file() and reusable.stat().st_size == size and file_sha(reusable) == sha
+            if valid_blob:
                 db.execute("UPDATE assets SET original_ready=1,original_sha=?,size=? WHERE id=?", (sha, size, media_id))
                 db.execute("INSERT INTO changes(asset_id) VALUES (?)", (media_id,))
                 db.commit()
                 return {"upload_id": None, "offset": size, "complete": True}
+            if reusable.exists() or row["original_sha"] == sha:
+                self.invalidate_object(sha, db)
+            replacement_bytes = reusable.stat().st_size if reusable.is_file() else 0
             existing = db.execute("""SELECT * FROM uploads
                  WHERE asset_id=? AND device_id=? AND sha=? AND size=? AND done=0
                  ORDER BY rowid DESC LIMIT 1""", (media_id, device["id"], sha, size)).fetchone()
@@ -308,7 +331,7 @@ class MediaService:
             used = sum(p.stat().st_size for name in ("objects", "staging", "thumbs")
                        for p in (self.root / name).iterdir() if p.is_file())
             reserved = db.execute("SELECT COALESCE(SUM(size-offset),0) FROM uploads WHERE done=0").fetchone()[0]
-            if used + reserved + size > self.quota_bytes or shutil.disk_usage(self.root).free < reserved + size + 64 * 1024 * 1024:
+            if used + reserved + size - replacement_bytes > self.quota_bytes or shutil.disk_usage(self.root).free < reserved + size + 64 * 1024 * 1024:
                 raise ApiError(507, "storage quota exceeded")
             upload_id = str(uuid.uuid4())
             db.execute("INSERT INTO uploads(id,asset_id,device_id,size,sha) VALUES(?,?,?,?,?)",
@@ -350,10 +373,16 @@ class MediaService:
                     db.commit()
                     raise ApiError(422, "original sha mismatch")
                 target = self.root / "objects" / sha
-                if target.exists():
+                if target.exists() and target.stat().st_size == row["size"] and file_sha(target) == sha:
                     path.unlink(missing_ok=True)
                 else:
                     os.replace(path, target)
+                    sync_directory(target.parent)
+                restored = db.execute("SELECT id FROM assets WHERE original_sha=? AND original_ready=0 AND id<>?",
+                                      (sha, row["asset_id"])).fetchall()
+                db.execute("UPDATE assets SET original_ready=1 WHERE original_sha=?", (sha,))
+                for asset in restored:
+                    db.execute("INSERT INTO changes(asset_id) VALUES (?)", (asset["id"],))
                 db.execute("""UPDATE assets SET original_ready=1, original_sha=?, size=?
                               WHERE id=?""", (sha, row["size"], row["asset_id"]))
                 db.execute("UPDATE uploads SET done=1,offset=? WHERE id=?", (new_offset, upload_id))
@@ -373,8 +402,12 @@ class MediaService:
             return self.root / "thumbs" / media_id, "image/jpeg"
         if kind == "original":
             if not item["original_ready"]:
-                raise ApiError(404, "original not ready")
-            return self.root / "objects" / item["original_sha"], item["mime_type"]
+                raise ApiError(503 if item["original_sha"] else 404, "original not ready")
+            path = self.root / "objects" / item["original_sha"]
+            if not path.is_file() or path.stat().st_size != item["size"] or file_sha(path) != item["original_sha"]:
+                self.invalidate_object(item["original_sha"])
+                raise ApiError(503, "stored original needs repair; source originals are retained")
+            return path, item["mime_type"]
         raise ApiError(404, "unknown resource")
 
 
@@ -416,6 +449,12 @@ def file_sha(path):
     return digest.hexdigest()
 
 
+def sync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try: os.fsync(descriptor)
+    finally: os.close(descriptor)
+
+
 def atomic_save(destination: Path, data: bytes):
     fd, tmp = tempfile.mkstemp(dir=destination.parent, prefix="tmp-")
     try:
@@ -424,6 +463,7 @@ def atomic_save(destination: Path, data: bytes):
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, destination)
+        sync_directory(destination.parent)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -555,7 +595,7 @@ def make_handler(service: MediaService):
                 return self.json_reply(200, {"queued": True})
             if self.command == "GET" and parts == ["v1", "status"]:
                 return self.json_reply(200, {"analysis": service.ai.status() if service.ai else {"enabled": False},
-                    "analysis_degraded": service.analysis_degraded})
+                    "analysis_degraded": service.analysis_degraded, "storage_failures": service.storage_failures()})
             if self.command == "POST" and parts == ["v1", "devices", "rotate"]:
                 return self.json_reply(200, service.rotate_device(device))
             if self.command == "DELETE" and len(parts) == 3 and parts[:2] == ["v1", "media"]:

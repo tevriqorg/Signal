@@ -267,7 +267,7 @@ class DualEmulatorInstrumentedTest {
                     image.recycle()
                 }
                 context.contentResolver.update(uri, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
-                GalleryBackgroundScheduler.catchUp(context)
+                GalleryBackgroundScheduler.catchUp(context).result.get(15, java.util.concurrent.TimeUnit.SECONDS)
             }
             "background-verify" -> {
                 val client = client()

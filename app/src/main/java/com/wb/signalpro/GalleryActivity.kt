@@ -82,6 +82,7 @@ import com.wb.signalpro.photos.MediaAccessLevel
 import com.wb.signalpro.photos.MediaChangeObserver
 import com.wb.signalpro.photos.MediaIndexCoordinator
 import com.wb.signalpro.photos.MediaPermissionPolicy
+import com.wb.signalpro.photos.decodeGalleryImage
 import com.wb.signalpro.photos.verifiedGalleryOriginal
 import com.wb.signalpro.photos.RemotePhoto
 import kotlinx.coroutines.Dispatchers
@@ -734,7 +735,7 @@ private fun mediaBitmap(uri: String?, size: Int, cacheKey: Any? = uri): ImageBit
             if (uri == null) null
             else runCatching {
                 if (uri.startsWith("file://"))
-                    BitmapFactory.decodeFile(uri.removePrefix("file://"))?.asImageBitmap()
+                    decodeGalleryImage(java.io.File(uri.removePrefix("file://")), size).asImageBitmap()
                 else resolver.loadThumbnail(Uri.parse(uri), Size(size, size), null).asImageBitmap()
             }.getOrNull()
         }

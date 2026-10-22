@@ -52,8 +52,11 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
     @Volatile private var cacheGeneration = 0L
     private var analysisStatus = ""
     private var analysisFailures = 0
+    private var storageFailures = 0
     private fun refreshAnalysisStatus() {
-        val analysis = client.serverStatus().getJSONObject("analysis")
+        val status = client.serverStatus()
+        storageFailures = status.optInt("storage_failures")
+        val analysis = status.getJSONObject("analysis")
         analysisFailures = analysis.optInt("failed")
         analysisStatus = if (!analysis.optBoolean("enabled")) "AI 搜索尚未启用"
             else "AI 索引：已处理 " + analysis.optInt("indexed") + " · 等待 " + analysis.optInt("pending") + " · 异常 " + analysisFailures
@@ -96,13 +99,13 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                 DeviceMediaProgress(entries.first().deviceName, entries.count { it.originalReady }, entries.size,
                     entries.sumOf { it.size ?: 0L })
             },
-            paired = client.paired, healthy = healthy && locals.values.none { it.failed } && remoteFailures().isEmpty() && analysisFailures == 0, description = message,
+            paired = client.paired, healthy = healthy && locals.values.none { it.failed } && remoteFailures().isEmpty() && analysisFailures == 0 && storageFailures == 0, description = message,
             local = locals, remote = store.allCatalog().filter { media ->
                 media.id !in availableServerIds
             },
             transferredBytes = bytes, totalBytes = total,
             pendingUploads = knownItems.count { locals[it.id.value]?.verified != true || storedVersions[it.id.value] != knownVersions[it.id.value] },
-            failures = locals.values.count { it.failed } + remoteFailures().size + analysisFailures,
+            failures = locals.values.count { it.failed } + remoteFailures().size + analysisFailures + storageFailures,
             remoteFailures = remoteFailures().map { it.substringAfter(':') }.toSet(),
             activeTransfer = active,
         )
@@ -201,7 +204,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                     }
                 }.onFailure { failed = true }
                 runCatching { refreshAnalysisStatus() }
-                val unresolved = failed || store.localSnapshot().values.any { it.failed } || remoteFailures().isNotEmpty() || analysisFailures > 0
+                val unresolved = failed || store.localSnapshot().values.any { it.failed } || remoteFailures().isNotEmpty() || analysisFailures > 0 || storageFailures > 0
                 update(!unresolved, if (unresolved) "有项目需要重试" else "同步系统正常", force = true)
             }
             } finally { endTransfer() }

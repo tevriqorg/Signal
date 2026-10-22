@@ -38,7 +38,7 @@ internal class MediaStoreSource(private val context: Context) {
     fun visibleIds(volumeName: String): Set<Long> = buildSet {
         resolver.query(MediaStore.Files.getContentUri(volumeName), arrayOf(MediaStore.Files.FileColumns._ID),
             "(${MediaStore.Files.FileColumns.MEDIA_TYPE}=? OR ${MediaStore.Files.FileColumns.MEDIA_TYPE}=?) AND ${MediaStore.MediaColumns.IS_PENDING}=0",
-            arrayOf(MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE.toString(), MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString()), null)?.use { cursor ->
+            arrayOf(MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE.toString(), MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString()), null).let { requireNotNull(it) { "MediaStore identity query unavailable" } }.use { cursor ->
             while (cursor.moveToNext()) add(cursor.getLong(0))
         }
     }
@@ -78,7 +78,7 @@ internal class MediaStoreSource(private val context: Context) {
         val orderBy = "$generationColumn ASC"
 
         val result = mutableListOf<ScannedMedia>()
-        resolver.query(filesUri, projection, selection, selectionArgs, orderBy)?.use { cursor ->
+        requireNotNull(resolver.query(filesUri, projection, selection, selectionArgs, orderBy)) { "MediaStore scan unavailable" }.use { cursor ->
             val idIndex = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
             val mediaTypeIndex = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MEDIA_TYPE)
             val mimeIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
