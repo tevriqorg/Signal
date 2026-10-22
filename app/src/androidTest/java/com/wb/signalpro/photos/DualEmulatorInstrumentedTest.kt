@@ -34,6 +34,34 @@ class DualEmulatorInstrumentedTest {
         if (!it.paired) it.enroll(args.getString("endpoint") ?: "http://127.0.0.1:8765", args.getString("enrollment") ?: "synthetic-test-enrollment-secret", "Emulator-$role")
     }
     private fun sha(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+    private fun uploadSessionOffset(item: MediaItem, mediaId: String): Long {
+        val digest = MessageDigest.getInstance("SHA-256")
+        var size = 0L
+        context.contentResolver.openInputStream(android.net.Uri.parse(item.contentUri))!!.use { input ->
+            val block = ByteArray(128 * 1024)
+            while (true) {
+                val count = input.read(block)
+                if (count < 0) break
+                digest.update(block, 0, count); size += count
+            }
+        }
+        val credential = SignalPairingStore(context).read()!!
+        val body = org.json.JSONObject().put("media_id", mediaId).put("size", size)
+            .put("sha256", digest.digest().joinToString("") { "%02x".format(it) })
+            .put("source_version", sha(item.toString().toByteArray())).toString().toByteArray()
+        val request = java.net.URL(credential.serverUrl + "/v1/uploads").openConnection() as java.net.HttpURLConnection
+        try {
+            request.requestMethod = "POST"; request.doOutput = true
+            request.connectTimeout = 12000; request.readTimeout = 60000
+            request.instanceFollowRedirects = false
+            request.setRequestProperty("Authorization", "Bearer " + credential.deviceToken)
+            request.setRequestProperty("Content-Type", "application/json")
+            request.setFixedLengthStreamingMode(body.size)
+            request.outputStream.use { it.write(body) }
+            assertTrue("authenticated session probe", request.responseCode in 200..299)
+            return org.json.JSONObject(request.inputStream.bufferedReader().use { it.readText() }).getLong("offset")
+        } finally { request.disconnect() }
+    }
     private fun all(client: SignalMediaClient): List<RemotePhoto> {
         var cursor = 0L
         val result = linkedMapOf<String, RemotePhoto>()
@@ -217,9 +245,7 @@ class DualEmulatorInstrumentedTest {
                     assertTrue("policy-deferred video is healthy", state.healthy)
                     assertEquals(1, state.pendingUploads)
                     assertFalse("background worker must not upload a video original", all(client).first { it.id == id }.originalReady)
-                    var observedOffset = -1L
-                    client.uploadOriginal(item, id, { observedOffset < 0 }) { done, _ -> observedOffset = done }
-                    assertEquals("background metadata reconciliation cannot advance original bytes", stopAt, observedOffset)
+                    assertEquals("background metadata reconciliation cannot advance original bytes", stopAt, uploadSessionOffset(item, id))
                 }
                 context.getSharedPreferences("dual-video", 0).edit().putString("uri", uri.toString()).putString("source-version", item.toString()).commit()
             }
