@@ -210,6 +210,17 @@ class DualEmulatorInstrumentedTest {
                 var stopAt = 0L
                 client.uploadOriginal(item, id, { stopAt < 1024 * 1024 }) { done, _ -> stopAt = done }
                 assertFalse(all(client).first { it.id == id }.originalReady)
+                GallerySyncEngine(context).use { engine ->
+                    engine.allowBackgroundImages = true
+                    var state = engine.snapshot(true, "")
+                    engine.synchronize(listOf(item)) { state = it }
+                    assertTrue("policy-deferred video is healthy", state.healthy)
+                    assertEquals(1, state.pendingUploads)
+                    assertFalse("background worker must not upload a video original", all(client).first { it.id == id }.originalReady)
+                    var observedOffset = -1L
+                    client.uploadOriginal(item, id, { false }) { done, _ -> observedOffset = done }
+                    assertEquals("background metadata reconciliation cannot advance original bytes", stopAt, observedOffset)
+                }
                 context.getSharedPreferences("dual-video", 0).edit().putString("uri", uri.toString()).putString("source-version", item.toString()).commit()
             }
             "resume-video", "interrupt-upload" -> {
