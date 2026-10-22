@@ -1,0 +1,28 @@
+name: Signal Server synthetic integration
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+      - 'fix/**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    name: Two-device sync / restart / auth / checksum
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Run isolated synthetic HTTP integration
+        run: python -m unittest discover -s server -p 'test_*.py' -v
+      - name: Static parse
+        run: python -m py_compile server/signal_server.py
