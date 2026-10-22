@@ -10,6 +10,8 @@ import re
 import sqlite3
 import subprocess
 import threading
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 
 class MediaSearchIndex:
@@ -67,9 +69,20 @@ class MediaSearchIndex:
                 FROM assets a JOIN devices d ON a.device_id=d.id
                 LEFT JOIN media_analysis m ON m.asset_id=a.id AND m.sha=a.original_sha
                 WHERE a.deleted=0""").fetchall()
+        zone = ZoneInfo(os.environ.get("SIGNAL_TIMEZONE", "Asia/Tokyo"))
+        today = datetime.now(zone).date()
+        date = today if "今天" in query or "today" in query.lower() else today - timedelta(days=1) if "昨天" in query or "yesterday" in query.lower() else None
+        iso = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", query)
+        if iso:
+            try: date = datetime.strptime(iso.group(1), "%Y-%m-%d").date()
+            except ValueError: pass
         matches = []
         for row in rows:
             reasons = []
+            if date:
+                if row["captured_at"] is None or datetime.fromtimestamp(row["captured_at"] / 1000, zone).date() != date:
+                    continue
+                reasons.append({"kind": "time", "date": str(date), "timezone": str(zone)})
             text = " ".join(str(row[k] or "") for k in ("filename", "search_text", "device_name", "ocr"))
             hits = [term for term in terms if term in text.casefold()]
             score = 0.0

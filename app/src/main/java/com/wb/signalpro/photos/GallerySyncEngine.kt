@@ -81,7 +81,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                 }
                 onUpdate(snapshot(true, "目录已更新"))
             } catch (error: Exception) {
-                onUpdate(snapshot(false, "连接失败：" + (error.message ?: "未知错误")))
+                onUpdate(snapshot(isTransient(error), "连接暂不可用，将自动重试：" + (error.message ?: "未知错误")))
                 return@withContext
             }
 
@@ -90,7 +90,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                 if (cancelled || (!foreground && !allowBackgroundImages)) break
                 val old = store.local(media.id.value)
                 val version = media.toString()
-                if (old?.verified == true && store.sourceVersion(media.id.value) == version) continue
+                if (old?.verified == true && store.sourceVersion(media.id.value) == version && store.thumbnailReady(old.mediaId)) continue
                 if (old?.failed == true) {
                     // Failed items remain visible in red until retry/reconnect; attempt again here.
                 }
@@ -102,11 +102,12 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                         store.saveSourceVersion(media.id.value, version)
                         touched++
                         onUpdate(snapshot(true, "基础信息已同步，等待原件"))
-                        runCatching { client.uploadThumbnail(media, mediaId) }
+
                     }
+                    val confirmedId = mediaId ?: continue
+                    if (!store.thumbnailReady(confirmedId)) client.uploadThumbnail(media, confirmedId)
                     val allowed = media.mediaType != MediaType.VIDEO || (foreground && fastWifi())
                     if (!allowed) continue
-                    val confirmedId = mediaId ?: continue
                     client.uploadOriginal(media, confirmedId,
                         shouldContinue = { !cancelled && (foreground || (allowBackgroundImages && media.mediaType != MediaType.VIDEO)) },
                         progress = { done, total ->
@@ -118,9 +119,10 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                     }
                     touched++
                 } catch (error: Exception) {
-                    failed = true
-                    if (mediaId != null) store.saveLocal(media.id.value, mediaId, verified = false, failed = true)
-                    onUpdate(snapshot(false, "同步异常：" + (error.message ?: "未知原因")))
+                    val terminal = !isTransient(error)
+                    failed = failed || terminal
+                    if (mediaId != null) store.saveLocal(media.id.value, mediaId, verified = false, failed = terminal)
+                    onUpdate(snapshot(!terminal, if (terminal) "同步异常：" + (error.message ?: "未知原因") else "网络暂不可用，等待重试"))
                 }
             }
             if (!cancelled) {
@@ -136,6 +138,9 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                     if (failed) "有项目需要重试" else "同步系统正常"))
             }
         }
+
+    private fun isTransient(error: Exception): Boolean = error is java.io.IOException ||
+        (error is SignalHttpError && (error.status == 408 || error.status == 429 || error.status >= 500 && error.status != 507))
 
     suspend fun pair(url: String, key: String, name: String): GallerySyncSnapshot = withContext(Dispatchers.IO) {
         client.enroll(url, key, name)

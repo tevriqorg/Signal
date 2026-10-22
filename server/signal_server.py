@@ -81,6 +81,7 @@ class MediaService:
                 db.execute("ALTER TABLE devices ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0")
             db.commit()
         self.rate_windows = OrderedDict()
+        self.analysis_degraded = False
         self.ai = None
         self.quota_bytes = int(os.environ.get("SIGNAL_STORAGE_QUOTA_BYTES", str(1024 ** 4)))
 
@@ -520,7 +521,7 @@ def make_handler(service: MediaService):
             parts = [p for p in url.path.split("/") if p]
             if self.command == "GET" and parts == ["health"]:
                 return self.json_reply(200, {"status": "ok", "protocol": "signal-media-v1",
-                                             "search": "multilingual-clip-ocr" if service.ai else "metadata", "ai_vision": bool(service.ai)})
+                                             "search": "multilingual-clip-ocr" if service.ai else "metadata", "ai_vision": bool(service.ai), "analysis_degraded": service.analysis_degraded})
             if self.command == "POST" and parts == ["v1", "devices"]:
                 return self.json_reply(201, service.enroll(self.headers.get("X-Enrollment-Key", ""), self.json_body()))
             if self.command == "POST" and len(parts) == 4 and parts[:2] == ["v1", "devices"] and parts[3] == "revoke":
@@ -597,9 +598,10 @@ def serve():
             while True:
                 try:
                     service.ai.index_pending()
+                    service.analysis_degraded = False
                 except Exception:
                     # Private media/paths and exception strings never enter logs.
-                    pass
+                    service.analysis_degraded = True
                 time.sleep(5)
         threading.Thread(target=analyze, daemon=True).start()
     server = BoundedHTTPServer((bind, port), make_handler(service))

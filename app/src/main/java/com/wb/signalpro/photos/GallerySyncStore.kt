@@ -40,7 +40,8 @@ internal data class RemotePhoto(
             matchReasons = j.optJSONArray("match_reasons")?.let { reasons ->
                 (0 until reasons.length()).map { index ->
                     val reason = reasons.getJSONObject(index)
-                    if (reason.optString("kind") == "visual_similarity") "画面内容相近"
+                    if (reason.optString("kind") == "time") "拍摄日期：" + reason.optString("date")
+                    else if (reason.optString("kind") == "visual_similarity") "画面内容相近"
                     else "文字或元数据：" + reason.optString("excerpt").take(100)
                 }.joinToString("；")
             } ?: "",
@@ -61,6 +62,10 @@ internal class GallerySyncStore(context: Context) : SQLiteOpenHelper(context, "s
             db.execSQL("CREATE TABLE source_versions (local_id TEXT PRIMARY KEY, version TEXT NOT NULL)")
             db.execSQL("UPDATE local_sync SET verified=0")
         }
+    }
+    fun thumbnailReady(mediaId: String): Boolean = readableDatabase.rawQuery(
+        "SELECT json FROM remote_catalog WHERE media_id=?", arrayOf(mediaId)).use {
+        it.moveToFirst() && JSONObject(it.getString(0)).optBoolean("thumbnail_ready")
     }
     fun sourceVersion(localId: String): String? = readableDatabase.rawQuery(
         "SELECT version FROM source_versions WHERE local_id=?", arrayOf(localId)).use {
