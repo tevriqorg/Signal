@@ -20,8 +20,15 @@ class MediaSearchIndex:
         from sentence_transformers import SentenceTransformer
         self.service = service
         self.lock = threading.Lock()
-        self.visual = SentenceTransformer(os.environ.get("SIGNAL_IMAGE_MODEL", "sentence-transformers/clip-ViT-B-32"), device="cpu")
-        self.text = SentenceTransformer(os.environ.get("SIGNAL_TEXT_MODEL", "sentence-transformers/clip-ViT-B-32-multilingual-v1"), device="cpu")
+        def load_model(name):
+            model = SentenceTransformer(name, device="cpu")
+            if os.environ.get("SIGNAL_AI_INT8") == "1":
+                import torch
+                torch.ao.quantization.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8, inplace=True)
+            return model
+        # Quantize sequentially so constrained runtimes never hold both full float models plus copies.
+        self.visual = load_model(os.environ.get("SIGNAL_IMAGE_MODEL", "sentence-transformers/clip-ViT-B-32"))
+        self.text = load_model(os.environ.get("SIGNAL_TEXT_MODEL", "sentence-transformers/clip-ViT-B-32-multilingual-v1"))
         with service.db() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS media_analysis(
                 asset_id TEXT PRIMARY KEY, sha TEXT NOT NULL, ocr TEXT NOT NULL,
