@@ -243,8 +243,10 @@ class GalleryActivity : ComponentActivity() {
             if (sourceChanged) sync.interruptForRescan = true
             return
         }
+        syncRequested = false
+        sync.interruptForRescan = false
+        ui = ui.copy(syncRunning = true)
         scope.launch {
-            ui = ui.copy(syncRunning = true)
             try {
                 sync.synchronize(items) { snapshot ->
                     scope.launch { ui = ui.copy(sync = snapshot) }

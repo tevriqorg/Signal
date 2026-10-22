@@ -303,7 +303,11 @@ class DualEmulatorInstrumentedTest {
                 val color = bitmap.getPixel(200, 200)
                 assertTrue(Color.green(color) > Color.red(color))
                 bitmap.recycle()
-                assertTrue(client.fetchPreview(media).isFile)
+                val cover = android.graphics.BitmapFactory.decodeFile(client.fetchPreview(media).absolutePath)
+                val coverColor = cover.getPixel(100, 100)
+                assertTrue(Color.green(coverColor) > Color.red(coverColor))
+                cover.recycle()
+                assertEquals(1, all(client).count { it.fileName == "dual-A.jpg" })
             }
             "permission-full", "permission-partial", "permission-denied" -> {
                 val expected = when (phase) {

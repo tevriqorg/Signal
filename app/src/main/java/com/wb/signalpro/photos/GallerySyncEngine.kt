@@ -116,7 +116,6 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                     onUpdate(snapshot(healthy, message, bytes, total, active))
                 }
             }
-            interruptForRescan = false
             val job = currentCoroutineContext()[Job]
             knownItems = items
             knownVersions = items.associate { it.id.value to it.toString() }
