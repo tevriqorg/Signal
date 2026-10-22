@@ -214,6 +214,7 @@ internal class SignalMediaClient(private val context: Context) {
         if (media.size != null && offset == media.size && fileSha(tmp) == media.sha256) {
             val target = File(folder, media.id)
             check(tmp.renameTo(target)) { "无法缓存原件" }
+            File(folder, media.id + ".sha256").writeText(media.sha256!!)
             return target
         }
         val connection = open(URL(credential.serverUrl + "/v1/media/" + media.id + "/original"),
@@ -247,6 +248,7 @@ internal class SignalMediaClient(private val context: Context) {
             }
             val target = File(folder, media.id)
             check(tmp.renameTo(target)) { "无法缓存原件" }
+            File(folder, media.id + ".sha256").writeText(media.sha256!!)
             return target
         } finally { connection.disconnect() }
     }
@@ -309,3 +311,13 @@ internal class SignalMediaClient(private val context: Context) {
 }
 
 internal data class SignalCatalog(val items: List<RemotePhoto>, val cursor: Long)
+
+/** Only a verified cache for the current server revision earns the no-dot state. */
+internal fun verifiedGalleryOriginal(context: Context, media: RemotePhoto): File? {
+    if (!media.originalReady || media.sha256 == null) return null
+    val folder = File(context.filesDir, "gallery-originals")
+    val file = File(folder, media.id)
+    val marker = File(folder, media.id + ".sha256")
+    return file.takeIf { it.isFile && (media.size == null || it.length() == media.size) &&
+        marker.isFile && runCatching { marker.readText() == media.sha256 }.getOrDefault(false) }
+}

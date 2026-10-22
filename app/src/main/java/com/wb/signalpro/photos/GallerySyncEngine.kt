@@ -19,6 +19,7 @@ internal data class GallerySyncSnapshot(
     val pendingUploads: Int = 0,
     val failures: Int = 0,
     val activeTransfer: String = "",
+    val remoteFailures: Set<String> = emptySet(),
 )
 
 /** Foreground opportunity sync. The service is the only server; no AIBOX adapter exists. */
@@ -26,11 +27,19 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
     private val app = context.applicationContext
     val client = SignalMediaClient(app)
     private val store = GallerySyncStore(app)
+    private val failurePrefs = app.getSharedPreferences("gallery-remote-failures", Context.MODE_PRIVATE)
+    private var knownItems: List<MediaItem> = emptyList()
+    private fun remoteFailures(): Set<String> = failurePrefs.getStringSet("ids", emptySet())!!.toSet()
+    @Synchronized private fun remoteFailure(id: String, failed: Boolean) {
+        val ids = remoteFailures().toMutableSet()
+        if (failed) ids.add(id) else ids.remove(id)
+        failurePrefs.edit().putStringSet("ids", ids).commit()
+    }
     @Volatile var foreground = false
     @Volatile var allowBackgroundImages = false
     @Volatile var cancelled = false
 
-    private fun fastWifi(): Boolean {
+    internal fun fastWifi(): Boolean {
         val manager = app.getSystemService(ConnectivityManager::class.java)
         val network = manager.activeNetwork ?: return false
         val caps = manager.getNetworkCapabilities(network) ?: return false
@@ -42,17 +51,19 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
     fun snapshot(healthy: Boolean, message: String, bytes: Long = 0, total: Long = 0, active: String = ""): GallerySyncSnapshot {
         val locals = store.localSnapshot()
         return GallerySyncSnapshot(
-            paired = client.paired, healthy = healthy, description = message,
+            paired = client.paired, healthy = healthy && remoteFailures().isEmpty(), description = message,
             local = locals, remote = store.remote(client.deviceId),
             transferredBytes = bytes, totalBytes = total,
-            pendingUploads = locals.values.count { !it.verified },
-            failures = locals.values.count { it.failed },
+            pendingUploads = knownItems.count { locals[it.id.value]?.verified != true || store.sourceVersion(it.id.value) != it.toString() },
+            failures = locals.values.count { it.failed } + remoteFailures().size,
+            remoteFailures = remoteFailures(),
             activeTransfer = active,
         )
     }
 
     suspend fun synchronize(items: List<MediaItem>, onUpdate: (GallerySyncSnapshot) -> Unit) =
         withContext(Dispatchers.IO) {
+            knownItems = items
             if (!client.paired) {
                 onUpdate(snapshot(false, "未配对 Signal Server"))
                 return@withContext
@@ -136,11 +147,17 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
     }
 
     suspend fun loadOriginal(media: RemotePhoto, progress: (Long, Long) -> Unit) =
-        withContext(Dispatchers.IO) { client.fetchOriginal(media, progress) }
+        withContext(Dispatchers.IO) {
+            try { client.fetchOriginal(media, progress).also { remoteFailure(media.id, false) } }
+            catch (error: Exception) { remoteFailure(media.id, true); throw error }
+        }
 
     fun cachedPreview(media: RemotePhoto) = client.preview(media.id)
     fun cachedOriginal(media: RemotePhoto) = client.original(media.id)
-    suspend fun loadPreview(media: RemotePhoto) = withContext(Dispatchers.IO) { client.fetchPreview(media) }
+    suspend fun loadPreview(media: RemotePhoto) = withContext(Dispatchers.IO) {
+        try { client.fetchPreview(media).also { remoteFailure(media.id, false) } }
+        catch (error: Exception) { if (media.thumbReady) remoteFailure(media.id, true); throw error }
+    }
 
     override fun close() { cancelled = true; store.close() }
 }

@@ -76,6 +76,7 @@ import com.wb.signalpro.photos.MediaAccessLevel
 import com.wb.signalpro.photos.MediaChangeObserver
 import com.wb.signalpro.photos.MediaIndexCoordinator
 import com.wb.signalpro.photos.MediaPermissionPolicy
+import com.wb.signalpro.photos.verifiedGalleryOriginal
 import com.wb.signalpro.photos.RemotePhoto
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
@@ -193,6 +194,10 @@ class GalleryActivity : ComponentActivity() {
                 .onSuccess {
                     ui = ui.copy(sync = it)
                     GalleryBackgroundScheduler.schedule(this@GalleryActivity)
+                    if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(
+                        android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                        requestPermissions.launch(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS))
+                    }
                     startSync(ui.items)
                 }.onFailure {
                     ui = ui.copy(sync = ui.sync.copy(healthy = false,
@@ -225,9 +230,9 @@ class GalleryActivity : ComponentActivity() {
                 }
             }.onSuccess {
                 ui = ui.copy(loadingRemote = false, selected = Selected.Remote(media),
-                    remoteError = null)
+                    remoteError = null, sync = sync.snapshot(true, "完整原件已缓存"))
             }.onFailure {
-                ui = ui.copy(loadingRemote = false, remoteError = it.message ?: "下载失败")
+                ui = ui.copy(loadingRemote = false, remoteError = it.message ?: "下载失败", sync = sync.snapshot(false, "下载失败，请重试"))
             }
         }
     }
@@ -518,7 +523,7 @@ private fun GalleryScreen(
     remoteSelected?.let { media ->
         val context = LocalContext.current
         val file = remember(state.loadingRemote, media.id) {
-            java.io.File(java.io.File(context.filesDir, "gallery-originals"), media.id).takeIf { it.isFile }
+            verifiedGalleryOriginal(context, media)
         }
         if (state.loadingRemote) {
             AlertDialog(onDismissRequest = { remoteSelected = null },
@@ -534,7 +539,17 @@ private fun GalleryScreen(
             MediaViewer("file://" + file.absolutePath,
                 media.deviceName + " · " + media.fileName, "完整原件已缓存",
                 onClose = { remoteSelected = null }, isVideo = media.isVideo,
-                onOpenVideo = {})
+                onOpenVideo = {
+                    val video = android.widget.VideoView(context)
+                    val controls = android.widget.MediaController(context)
+                    video.setMediaController(controls)
+                    video.setVideoURI(Uri.fromFile(file))
+                    val dialog = android.app.AlertDialog.Builder(context).setView(video)
+                        .setPositiveButton("关闭") { _, _ -> video.stopPlayback() }.create()
+                    dialog.setOnDismissListener { video.stopPlayback() }
+                    video.setOnPreparedListener { video.start() }
+                    dialog.show()
+                })
         }
     }
 }
@@ -553,10 +568,10 @@ private fun localBadge(item: MediaItem, transfer: LocalTransfer?): GalleryTransf
 private fun remoteBadge(media: RemotePhoto, sync: GallerySyncSnapshot, failed: Set<String>): GalleryTransferBadge {
     val context = LocalContext.current
     val original = remember(sync.remote, media.id) {
-        java.io.File(java.io.File(context.filesDir, "gallery-originals"), media.id).takeIf { it.isFile }
+        verifiedGalleryOriginal(context, media)
     }
     val state = when {
-        media.id in failed -> GalleryTransferState.DOWNLOAD_FAILED
+        media.id in failed || media.id in sync.remoteFailures -> GalleryTransferState.DOWNLOAD_FAILED
         original != null -> GalleryTransferState.ORIGINAL_CACHED
         else -> GalleryTransferState.PREVIEW_ONLY
     }

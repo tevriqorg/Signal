@@ -70,8 +70,16 @@ internal class MediaIndexCoordinator(context: Context) : AutoCloseable {
         MediaReconcileReport(access, indexed, modes, System.currentTimeMillis())
     }
 
-    suspend fun indexedMedia(limit: Int = 2_000): List<MediaItem> = withContext(Dispatchers.IO) {
-        store.list(limit = limit)
+    suspend fun indexedMedia(limit: Int = Int.MAX_VALUE): List<MediaItem> = withContext(Dispatchers.IO) {
+        val result = ArrayList<MediaItem>()
+        var offset = 0
+        while (offset < limit) {
+            val page = store.list(limit = minOf(1000, limit - offset), offset = offset)
+            result.addAll(page)
+            offset += page.size
+            if (page.size < 1000) break
+        }
+        result
     }
 
     fun newObserver(onChange: () -> Unit): MediaChangeObserver = MediaChangeObserver(appContext, onChange)
