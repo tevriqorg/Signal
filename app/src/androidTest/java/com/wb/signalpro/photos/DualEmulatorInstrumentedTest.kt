@@ -102,7 +102,7 @@ class DualEmulatorInstrumentedTest {
                     val device = UiDevice.getInstance(instrumentation)
                     assertTrue(device.wait(Until.hasObject(By.text("照片")), 15000))
                     assertTrue(device.wait(Until.hasObject(By.textContains("Emulator-$peer")), 15000))
-                    assertTrue(device.takeScreenshot(File("/sdcard/Pictures/dual-$role.png")))
+                    assertTrue(device.takeScreenshot(File(context.getExternalFilesDir(null), "dual-$role.png")))
                 } finally { activity.finish() }
             }
             "offline" -> {
@@ -184,7 +184,7 @@ class DualEmulatorInstrumentedTest {
                     assertTrue(device.wait(Until.hasObject(By.text("使用系统播放器打开")), 15000))
                     device.findObject(By.text("使用系统播放器打开")).click()
                     assertTrue(device.wait(Until.hasObject(By.desc("视频正在播放")), 15000))
-                    device.takeScreenshot(File("/sdcard/Pictures/dual-video-playing.png"))
+                    device.takeScreenshot(File(context.getExternalFilesDir(null), "dual-video-playing.png"))
                 } finally { activity.finish() }
             }
             "background-seed" -> {
@@ -230,7 +230,7 @@ class DualEmulatorInstrumentedTest {
                         val label = if (expected == MediaAccessLevel.PARTIAL) "仅部分相册可访问" else "授权后才能浏览本机相册"
                         assertTrue(device.wait(Until.hasObject(By.text(label)), 15000))
                     }
-                    assertTrue(device.takeScreenshot(File("/sdcard/Pictures/dual-permission-$role.png")))
+                    assertTrue(device.takeScreenshot(File(context.getExternalFilesDir(null), "dual-permission-$role.png")))
                 } finally { activity.finish() }
             }
             "migration" -> {

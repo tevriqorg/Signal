@@ -90,14 +90,14 @@ class SignalGalleryEndToEndInstrumentedTest {
             assertTrue(device.wait(Until.hasObject(By.text("照片")), 15_000))
             assertNotNull(device.findObject(By.text("视频")))
             assertNotNull(device.findObject(By.text("截图")))
-            val cloud = device.findObject(By.text("☁"))
+            val cloud = device.findObject(By.descContains("查看同步与存储"))
             assertNotNull("cloud status control", cloud)
             cloud.click()
             assertTrue(device.wait(Until.hasObject(By.text("同步与存储")), 8_000))
             assertTrue(device.hasObject(By.textContains("本机索引")))
             device.findObject(By.text("关闭")).click()
             // Screenshot is evidence only; no assertion is based on color-pixel matching.
-            device.takeScreenshot(java.io.File("/sdcard/Pictures/signal-gallery-emulator.png"))
+            device.takeScreenshot(java.io.File(app.getExternalFilesDir(null), "signal-gallery-emulator.png"))
         } finally { activity.finish() }
     }
 

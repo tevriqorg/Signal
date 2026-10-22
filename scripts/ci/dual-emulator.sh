@@ -33,17 +33,19 @@ for serial in emulator-5554 emulator-5556; do
 done
 adb devices -l > dual-evidence/devices.txt
 [[ $(adb devices | grep -c '^emulator-.*device$') -eq 2 ]]
+phase_counter=0
 phase() {
   local role="$1" task="$2" serial=emulator-5554
+  phase_counter=$((phase_counter + 1))
+  local evidence_name="$phase_counter-$role-$task"
   [[ "$role" == B ]] && serial=emulator-5556
   adb -s "$serial" shell input keyevent KEYCODE_WAKEUP
   adb -s "$serial" shell wm dismiss-keyguard
-  timeout 180s adb -s "$serial" shell am instrument -w -r -e class com.wb.signalpro.photos.DualEmulatorInstrumentedTest -e role "$role" -e phase "$task" com.wb.signalpro.test/androidx.test.runner.AndroidJUnitRunner | tee "dual-evidence/$role-$task.txt"
-  adb -s "$serial" logcat -d > "dual-evidence/$role-$task-logcat.txt"
-  adb -s "$serial" shell screencap -p /sdcard/dual-phase.png
-  adb -s "$serial" pull /sdcard/dual-phase.png "dual-evidence/$role-$task.png"
-  grep -q 'OK (1 test)' "dual-evidence/$role-$task.txt"
-  ! grep -qE 'FAILURES|INSTRUMENTATION_FAILED|Process crashed' "dual-evidence/$role-$task.txt"
+  timeout 180s adb -s "$serial" shell am instrument -w -r -e class com.wb.signalpro.photos.DualEmulatorInstrumentedTest -e role "$role" -e phase "$task" com.wb.signalpro.test/androidx.test.runner.AndroidJUnitRunner | tee "dual-evidence/$evidence_name.txt"
+  adb -s "$serial" logcat -d > "dual-evidence/$evidence_name-logcat.txt"
+  adb -s "$serial" exec-out screencap -p > "dual-evidence/$evidence_name.png"
+  grep -q 'OK (1 test)' "dual-evidence/$evidence_name.txt"
+  ! grep -qE 'FAILURES|INSTRUMENTATION_FAILED|Process crashed' "dual-evidence/$evidence_name.txt"
 }
 interrupt_transfer() {
   local role="$1" task="$2" serial=emulator-5554
@@ -86,7 +88,7 @@ for role in A B; do
   phase "$role" offline
   adb -s "$serial" reverse tcp:8765 tcp:8765
   phase "$role" receive
-  adb -s "$serial" pull "/sdcard/Pictures/dual-$role.png" "dual-evidence/$role.png"
+  adb -s "$serial" pull "/sdcard/Android/data/com.wb.signalpro/files/dual-$role.png" "dual-evidence/$role.png"
   adb -s "$serial" logcat -d > "dual-evidence/$role-logcat.txt"
   phase "$role" migration
 done

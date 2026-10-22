@@ -8,6 +8,7 @@ import android.util.Size
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -47,6 +48,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size as DrawSize
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -337,7 +343,15 @@ private fun GalleryScreen(
                 TextButton(onClick = onBack) { Text("‹ 返回", color = Blue, fontSize = 15.sp) }
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = { showSync = true }) {
-                    Text("☁", color = if (state.sync.healthy) Green else Red, fontSize = 24.sp)
+                    val cloudColor = if (state.sync.healthy) Green else Red
+                    Canvas(Modifier.size(26.dp).semantics {
+                        contentDescription = (if (state.sync.healthy) "同步系统正常" else "同步异常") + "，查看同步与存储"
+                    }) {
+                        val w = size.width; val h = size.height
+                        drawRoundRect(cloudColor, Offset(w * .08f, h * .48f), DrawSize(w * .84f, h * .38f), CornerRadius(w * .18f))
+                        drawCircle(cloudColor, w * .24f, Offset(w * .43f, h * .42f))
+                        drawCircle(cloudColor, w * .19f, Offset(w * .68f, h * .50f))
+                    }
                 }
                 Box {
                     TextButton(onClick = { overflow = true }) {
@@ -629,7 +643,7 @@ private fun GalleryTile(image: ImageBitmap?, description: String, badge: Gallery
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(3.dp)
         ) {
-            Text(if (badge.source.showCloud) "☁ " + badge.source.label else "▯ 本机",
+            Text(if (badge.source.showCloud) "☁ " + badge.source.label else "本机",
                 maxLines = 1, fontSize = 9.sp, color = Color.White)
         }
         if (badge.dot != GalleryDot.NONE) {
