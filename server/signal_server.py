@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import sqlite3
 import tempfile
 import threading
@@ -71,7 +72,48 @@ class MediaService:
             columns = {r[1] for r in db.execute("PRAGMA table_info(assets)")}
             if "source_version" not in columns:
                 db.execute("ALTER TABLE assets ADD COLUMN source_version TEXT NOT NULL DEFAULT ''")
+            if "deleted" not in columns:
+                db.execute("ALTER TABLE assets ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+            device_columns = {r[1] for r in db.execute("PRAGMA table_info(devices)")}
+            if "revoked" not in device_columns:
+                db.execute("ALTER TABLE devices ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0")
             db.commit()
+        self.quota_bytes = int(os.environ.get("SIGNAL_STORAGE_QUOTA_BYTES", str(1024 ** 4)))
+
+    def rotate_device(self, device):
+        token = secrets.token_urlsafe(40)
+        with self.lock, self.db() as db:
+            db.execute("UPDATE devices SET token_hash=? WHERE id=? AND revoked=0", (token_hash(token), device["id"]))
+        return {"device_token": token}
+
+    def revoke_device(self, key, device_id):
+        if not hmac.compare_digest(token_hash(key), self.enrollment_hash):
+            raise ApiError(401, "invalid administrator credential")
+        with self.lock, self.db() as db:
+            db.execute("UPDATE devices SET revoked=1 WHERE id=?", (device_id,))
+        return {"revoked": True}
+
+    def delete_asset(self, device, media_id):
+        with self.lock, self.db() as db:
+            row = self.item(media_id)
+            if row["device_id"] != device["id"]:
+                raise ApiError(403, "not the owning device")
+            db.execute("UPDATE assets SET deleted=1 WHERE id=?", (media_id,))
+            db.execute("INSERT INTO changes(asset_id) VALUES (?)", (media_id,))
+        # Tombstone only: originals remain retained; never deletes phone originals.
+        return {"deleted": True}
+
+    def backup(self, destination):
+        destination = Path(destination)
+        destination.mkdir(parents=True, exist_ok=False)
+        with self.lock, self.db() as source:
+            with sqlite3.connect(destination / "signal.sqlite3") as target:
+                source.backup(target)
+            for name in ("objects", "thumbs", "staging"):
+                shutil.copytree(self.root / name, destination / name)
+            manifest = {str(p.relative_to(destination)): file_sha(p) for p in destination.rglob("*") if p.is_file()}
+            atomic_save(destination / "manifest.json", json.dumps(manifest, sort_keys=True).encode())
+        return manifest
 
     def db(self):
         connection = sqlite3.connect(self.db_path, timeout=30)
@@ -102,7 +144,7 @@ class MediaService:
             raise ApiError(401, "missing bearer token")
         hashed = token_hash(raw[7:])
         with self.db() as db:
-            row = db.execute("SELECT id,name,platform FROM devices WHERE token_hash=?", (hashed,)).fetchone()
+            row = db.execute("SELECT id,name,platform FROM devices WHERE token_hash=? AND revoked=0", (hashed,)).fetchone()
         if row is None:
             raise ApiError(401, "invalid device credential")
         return row
@@ -128,6 +170,8 @@ class MediaService:
             row = db.execute("SELECT * FROM assets WHERE device_id=? AND local_id=?",
                              (device["id"], local_id)).fetchone()
             if row:
+                if row["deleted"]:
+                    raise ApiError(409, "asset tombstoned; explicit restore required")
                 media_id = row["id"]
                 changed = (source_version != row["source_version"] or any(
                     row[k] != v for k, v in zip(
@@ -185,6 +229,8 @@ class MediaService:
 
     def thumbnail(self, device: sqlite3.Row, media_id: str, data: bytes, sha: str):
         row = self.item(media_id)
+        if row["deleted"]:
+            raise ApiError(410, "asset deleted")
         if row["device_id"] != device["id"]:
             raise ApiError(403, "not the owning device")
         if len(data) < 1 or len(data) > MAX_THUMB or not HEX64.fullmatch(sha):
@@ -201,6 +247,8 @@ class MediaService:
     def start_upload(self, device: sqlite3.Row, body: dict):
         media_id = text_field(body, "media_id", 48)
         row = self.item(media_id)
+        if row["deleted"]:
+            raise ApiError(410, "asset deleted")
         if row["device_id"] != device["id"]:
             raise ApiError(403, "not the owning device")
         size = integer_field(body, "size", 1, MAX_FILE)
@@ -221,6 +269,11 @@ class MediaService:
                 db.execute("UPDATE uploads SET offset=? WHERE id=?", (offset, existing["id"]))
                 db.commit()
                 return {"upload_id": existing["id"], "offset": offset, "complete": False}
+            used = sum(p.stat().st_size for name in ("objects", "staging", "thumbs")
+                       for p in (self.root / name).iterdir() if p.is_file())
+            reserved = db.execute("SELECT COALESCE(SUM(size-offset),0) FROM uploads WHERE done=0").fetchone()[0]
+            if used + reserved + size > self.quota_bytes:
+                raise ApiError(507, "storage quota exceeded")
             upload_id = str(uuid.uuid4())
             db.execute("INSERT INTO uploads(id,asset_id,device_id,size,sha) VALUES(?,?,?,?,?)",
                        (upload_id, media_id, device["id"], size, sha))
@@ -276,6 +329,8 @@ class MediaService:
 
     def content(self, media_id: str, kind: str):
         item = self.item(media_id)
+        if item["deleted"]:
+            raise ApiError(410, "asset deleted")
         if kind == "thumbnail":
             if not item["thumb_ready"]:
                 raise ApiError(404, "preview not ready")
@@ -311,6 +366,7 @@ def public_item(row):
         "width": row["width"], "height": row["height"],
         "duration_ms": row["duration_ms"], "filename": row["filename"],
         "size": row["size"], "sha256": row["original_sha"],
+        "deleted": bool(row["deleted"]),
         "original_ready": bool(row["original_ready"]),
         "thumbnail_ready": bool(row["thumb_ready"]), "revision": row["seq"]
     }
@@ -425,7 +481,13 @@ def make_handler(service: MediaService):
                                              "search": "metadata", "ai_vision": False})
             if self.command == "POST" and parts == ["v1", "devices"]:
                 return self.json_reply(201, service.enroll(self.headers.get("X-Enrollment-Key", ""), self.json_body()))
+            if self.command == "POST" and len(parts) == 4 and parts[:2] == ["v1", "devices"] and parts[3] == "revoke":
+                return self.json_reply(200, service.revoke_device(self.headers.get("X-Enrollment-Key", ""), parts[2]))
             device = service.authenticate(self.headers.get("Authorization", ""))
+            if self.command == "POST" and parts == ["v1", "devices", "rotate"]:
+                return self.json_reply(200, service.rotate_device(device))
+            if self.command == "DELETE" and len(parts) == 3 and parts[:2] == ["v1", "media"]:
+                return self.json_reply(200, service.delete_asset(device, parts[2]))
             if self.command == "POST" and parts == ["v1", "media"]:
                 return self.json_reply(200, service.upsert_asset(device, self.json_body()))
             if self.command == "GET" and parts in (["v1", "media"], ["v1", "search"]):
@@ -467,6 +529,7 @@ def make_handler(service: MediaService):
         do_GET = respond
         do_POST = respond
         do_PUT = respond
+        do_DELETE = respond
 
     return Handler
 

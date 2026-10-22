@@ -18,6 +18,7 @@ internal data class RemotePhoto(
     val thumbReady: Boolean,
     val originalReady: Boolean,
     val revision: Long,
+    val deleted: Boolean = false,
 ) {
     val isVideo: Boolean get() = kind == "video"
     companion object {
@@ -34,6 +35,7 @@ internal data class RemotePhoto(
             thumbReady = j.optBoolean("thumbnail_ready"),
             originalReady = j.optBoolean("original_ready"),
             revision = j.optLong("revision"),
+            deleted = j.optBoolean("deleted"),
         )
     }
 }
@@ -88,7 +90,7 @@ internal class GallerySyncStore(context: Context) : SQLiteOpenHelper(context, "s
         readableDatabase.rawQuery("SELECT json FROM remote_catalog ORDER BY revision DESC", null).use { c ->
             while (c.moveToNext()) {
                 runCatching { RemotePhoto.parse(JSONObject(c.getString(0))) }.getOrNull()?.let {
-                    if (it.deviceId != deviceId) result.add(it)
+                    if (it.deviceId != deviceId && !it.deleted) result.add(it)
                 }
             }
         }
@@ -117,4 +119,5 @@ private fun RemotePhoto.toJson() = JSONObject().apply {
     put("thumbnail_ready", thumbReady)
     put("original_ready", originalReady)
     put("revision", revision)
+    put("deleted", deleted)
 }

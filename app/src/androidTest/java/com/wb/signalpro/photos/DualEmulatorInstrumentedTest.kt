@@ -92,6 +92,67 @@ class DualEmulatorInstrumentedTest {
                 assertTrue(GallerySyncStore(context).use { it.remote(client.deviceId).isNotEmpty() })
                 assertTrue(runCatching { client.catalog(0) }.isFailure)
             }
+            "publish-video" -> {
+                val input = File("/sdcard/Download/signal-large.mp4")
+                assertTrue("fixture must exceed 128 MiB", input.length() > 128L * 1024 * 1024)
+                val values = ContentValues().apply {
+                    put(MediaStore.Video.Media.DISPLAY_NAME, "dual-large-$role.mp4")
+                    put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                    put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/SignalDual/")
+                }
+                val uri = context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)!!
+                context.contentResolver.openOutputStream(uri)!!.use { output -> input.inputStream().use { it.copyTo(output) } }
+                val item = MediaItem(MediaId("dual-video-$role"), 2, uri.toString(), MediaType.VIDEO,
+                    1790000000000, 1790000000000, 1, "video/mp4", 640, 360, 36000, "Movies/SignalDual/", "dual-large-$role.mp4")
+                val client = client()
+                val id = client.register(item)
+                client.uploadThumbnail(item, id)
+                var stopAt = 0L
+                client.uploadOriginal(item, id, { stopAt < 1024 * 1024 }) { done, _ -> stopAt = done }
+                assertFalse(all(client).first { it.id == id }.originalReady)
+                context.getSharedPreferences("dual-video", 0).edit().putString("uri", uri.toString()).commit()
+            }
+            "resume-video" -> {
+                val uri = context.getSharedPreferences("dual-video", 0).getString("uri", null)!!
+                val item = MediaItem(MediaId("dual-video-$role"), 2, uri, MediaType.VIDEO,
+                    1790000000000, 1790000000000, 1, "video/mp4", 640, 360, 36000, "Movies/SignalDual/", "dual-large-$role.mp4")
+                val client = client()
+                val id = all(client).first { it.fileName == "dual-large-$role.mp4" }.id
+                var initial = -1L
+                client.uploadOriginal(item, id, { true }) { done, _ -> if (initial < 0) initial = done }
+                assertTrue("must resume past first MiB", initial > 1024 * 1024)
+                assertTrue(all(client).first { it.id == id }.originalReady)
+            }
+            "partial-video" -> {
+                val client = client()
+                val media = all(client).first { it.fileName.startsWith("dual-large-") }
+                // Abort at an actual streaming callback; persistent partial must survive host force-stop.
+                assertTrue(runCatching {
+                    client.fetchOriginal(media) { done, _ -> if (done >= 1024 * 1024) error("synthetic connection interrupted") }
+                }.isFailure)
+                val partial = File(File(context.filesDir, "gallery-originals"), media.id + "." + media.sha256 + ".part")
+                assertTrue(partial.length() >= 1024 * 1024)
+            }
+            "receive-video" -> {
+                val client = client()
+                val media = all(client).first { it.fileName.startsWith("dual-large-") }
+                var first = -1L
+                val file = client.fetchOriginal(media) { done, _ -> if (first < 0) first = done }
+                assertTrue("download must resume beyond previous partial", first > 1024 * 1024)
+                assertEquals(media.size, file.length())
+                val digest = MessageDigest.getInstance("SHA-256")
+                file.inputStream().use { input ->
+                    val buffer = ByteArray(128 * 1024)
+                    while (true) { val count = input.read(buffer); if (count < 0) break; digest.update(buffer, 0, count) }
+                }
+                assertEquals(media.sha256, digest.digest().joinToString("") { "%02x".format(it) })
+                val retriever = android.media.MediaMetadataRetriever()
+                try {
+                    retriever.setDataSource(file.absolutePath)
+                    assertTrue(retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)!!.toLong() > 30000)
+                    assertNotNull(retriever.getFrameAtTime(1000000))
+                } finally { retriever.release() }
+            }
             "migration" -> {
                 val name = "signal-gallery-sync.db"
                 context.deleteDatabase(name)

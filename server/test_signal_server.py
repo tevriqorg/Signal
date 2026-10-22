@@ -159,6 +159,36 @@ class SignalServerIntegrationTest(unittest.TestCase):
         # The old content-addressed object remains safely retained.
         self.assertEqual(payload, (Path(self.temp.name) / "objects" / sha).read_bytes())
 
+    def test_revocation_rotation_tombstone_quota_and_backup_restore(self):
+        code, rotated = self.call("POST", "/v1/devices/rotate", token=self.device_a)
+        self.assertEqual(200, code)
+        code, _ = self.call("GET", "/v1/media", token=self.device_a)
+        self.assertEqual(401, code)
+        self.device_a = rotated["device_token"]
+        media = self.make_photo()
+        self.service.quota_bytes = 4
+        code, _ = self.call("POST", "/v1/uploads", {"media_id": media, "size": 5, "sha256": "a"*64}, token=self.device_a)
+        self.assertEqual(507, code)
+        code, _ = self.call("DELETE", f"/v1/media/{media}", token=self.device_b)
+        self.assertEqual(403, code)
+        code, _ = self.call("DELETE", f"/v1/media/{media}", token=self.device_a)
+        self.assertEqual(200, code)
+        code, catalog = self.call("GET", "/v1/media", token=self.device_b)
+        self.assertTrue(catalog["items"][-1]["deleted"])
+        with tempfile.TemporaryDirectory() as destination:
+            backup = Path(destination) / "snapshot"
+            manifest = self.service.backup(backup)
+            self.assertTrue(manifest)
+            for name, digest in manifest.items():
+                self.assertEqual(digest, hashlib.sha256((backup / name).read_bytes()).hexdigest())
+            restored = MediaService(backup, ENROLL)
+            self.assertTrue(restored.item(media)["deleted"])
+            self.assertEqual("device-A", restored.authenticate("Bearer " + self.device_a)["id"])
+        code, _ = self.call("POST", "/v1/devices/device-B/revoke", headers={"X-Enrollment-Key": ENROLL})
+        self.assertEqual(200, code)
+        code, _ = self.call("GET", "/v1/media", token=self.device_b)
+        self.assertEqual(401, code)
+
     def test_bad_hash_rolls_back_and_owner_only_upload(self):
         photo = self.make_photo()
         code, upload = self.call("POST", "/v1/uploads", {"media_id": photo, "size": 5, "sha256": "a"*64}, token=self.device_a)

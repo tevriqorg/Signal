@@ -36,6 +36,16 @@ phase() {
   grep -q 'OK (1 test)' "dual-evidence/$role-$task.txt"
   ! grep -qE 'FAILURES|INSTRUMENTATION_FAILED|Process crashed' "dual-evidence/$role-$task.txt"
 }
+command -v ffmpeg >/dev/null || { sudo apt-get update -qq; sudo apt-get install -y ffmpeg; }
+ffmpeg -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=640x360:rate=24' -t 36 -c:v libx264 -preset ultrafast -b:v 32M -minrate 32M -maxrate 32M -bufsize 32M -x264-params nal-hrd=cbr -pix_fmt yuv420p "$RUNNER_TEMP/signal-large.mp4"
+stat -c '%s' "$RUNNER_TEMP/signal-large.mp4" > dual-evidence/video-size.txt
+adb -s emulator-5554 push "$RUNNER_TEMP/signal-large.mp4" /sdcard/Download/signal-large.mp4
+phase A publish-video
+adb -s emulator-5554 shell am force-stop com.wb.signalpro
+phase A resume-video
+phase B partial-video
+adb -s emulator-5556 shell am force-stop com.wb.signalpro
+phase B receive-video
 phase A publish
 phase B receive
 phase B publish
