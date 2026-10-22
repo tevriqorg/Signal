@@ -16,3 +16,17 @@ The bundled executable is invoked locally by Signal for user-initiated, single-s
 The initial public server presets are based on the community-maintained `R0GGER/public-iperf3-servers` directory. Public endpoints are not operated by Signal and may change or become unavailable.
 
 - Directory: https://github.com/R0GGER/public-iperf3-servers
+
+## Optional server-side search runtime
+
+The isolated AI runtime downloads dependencies and model snapshots separately; model
+weights and private indexes are not bundled into the Android APK or this repository.
+
+- SentenceTransformers: https://github.com/huggingface/sentence-transformers (Apache-2.0)
+- Multilingual CLIP model: https://huggingface.co/sentence-transformers/clip-ViT-B-32-multilingual-v1 (Apache-2.0 model card)
+- CLIP image model: https://huggingface.co/sentence-transformers/clip-ViT-B-32 ; upstream https://github.com/openai/CLIP (MIT)
+- Tesseract and language data: https://github.com/tesseract-ocr/tesseract and https://github.com/tesseract-ocr/tessdata_fast (Apache-2.0)
+- PyTorch: https://github.com/pytorch/pytorch (BSD-style); Pillow: https://github.com/python-pillow/Pillow (HPND)
+
+Preserve upstream licenses/model cards when provisioning or redistributing the separate
+runtime. Generated test images contain no user photographs or private location data.
