@@ -41,6 +41,11 @@ for serial in emulator-5554 emulator-5556; do
   adb -s "$serial" shell input keyevent KEYCODE_WAKEUP
   adb -s "$serial" shell wm dismiss-keyguard
   adb -s "$serial" shell input keyevent 82
+  # Pixel Launcher 曾在 CI 中 ANR 并遮住已正常显示的相册。仅禁用这个
+  # 无关的临时 AVD 包，不隐藏 Signal ANR、系统权限或其他错误对话框。
+  if adb -s "$serial" shell pm path com.google.android.apps.nexuslauncher | grep -q '^package:'; then
+    adb -s "$serial" shell pm disable-user --user 0 com.google.android.apps.nexuslauncher
+  fi
   adb -s "$serial" install -r app/build/outputs/apk/debug/app-debug.apk
   adb -s "$serial" install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
   adb -s "$serial" reverse tcp:8765 tcp:8765
