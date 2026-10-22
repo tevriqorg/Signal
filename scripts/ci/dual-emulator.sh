@@ -86,3 +86,19 @@ for role in A B; do
   adb -s "$serial" shell pm grant com.wb.signalpro android.permission.READ_MEDIA_VIDEO
   adb -s "$serial" shell dumpsys jobscheduler > "dual-evidence/$role-jobscheduler.txt"
 done
+
+# Exercise actual WorkManager/JobScheduler, including Doze deferral and later OS execution.
+for role in A B; do
+  serial=emulator-5554; [[ "$role" == B ]] && serial=emulator-5556
+  adb -s "$serial" shell dumpsys battery unplug
+  adb -s "$serial" shell dumpsys deviceidle force-idle
+  phase "$role" background-seed
+  adb -s "$serial" shell am kill com.wb.signalpro
+  adb -s "$serial" shell dumpsys deviceidle unforce
+  adb -s "$serial" shell dumpsys battery reset
+  adb -s "$serial" shell dumpsys jobscheduler > "dual-evidence/$role-background-jobs.txt"
+  for job in $(adb -s "$serial" shell dumpsys jobscheduler | sed -n 's/.*JOB #[^/]*\/\([0-9][0-9]*\):.*com.wb.signalpro\/.*/\1/p' | tr -d '\r' | sort -u); do
+    adb -s "$serial" shell cmd jobscheduler run -f com.wb.signalpro "$job"
+  done
+  phase "$role" background-verify
+done

@@ -148,6 +148,7 @@ class GalleryActivity : ComponentActivity() {
     override fun onResume() { super.onResume(); refresh(false) }
     override fun onStop() {
         sync.foreground = false
+        if (sync.client.paired) GalleryBackgroundScheduler.catchUp(this)
         observer?.unregister()
         observer = null
         super.onStop()

@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkerParameters
@@ -43,6 +45,11 @@ internal class GalleryBackgroundWorker(context: Context, params: WorkerParameter
 }
 
 internal object GalleryBackgroundScheduler {
+    fun catchUp(context: Context) {
+        val request = OneTimeWorkRequestBuilder<GalleryBackgroundWorker>()
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
+        WorkManager.getInstance(context).enqueueUniqueWork("signal-gallery-catchup", ExistingWorkPolicy.KEEP, request)
+    }
     fun schedule(context: Context) {
         val constraints = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
         val request = PeriodicWorkRequestBuilder<GalleryBackgroundWorker>(15, TimeUnit.MINUTES)

@@ -166,6 +166,34 @@ class DualEmulatorInstrumentedTest {
                     device.takeScreenshot(File("/sdcard/Pictures/dual-video-playing.png"))
                 } finally { activity.finish() }
             }
+            "background-seed" -> {
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, "background-$role.jpg")
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/SignalDual/")
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)!!
+                context.contentResolver.openOutputStream(uri)!!.use { output ->
+                    val image = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888)
+                    image.eraseColor(Color.GREEN)
+                    image.compress(Bitmap.CompressFormat.JPEG, 80, output)
+                    image.recycle()
+                }
+                context.contentResolver.update(uri, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
+                GalleryBackgroundScheduler.catchUp(context)
+            }
+            "background-verify" -> {
+                val client = client()
+                val deadline = System.currentTimeMillis() + 60000
+                var ready = false
+                while (System.currentTimeMillis() < deadline) {
+                    ready = all(client).any { it.fileName == "background-$role.jpg" && it.originalReady && it.thumbReady }
+                    if (ready) break
+                    Thread.sleep(1000)
+                }
+                assertTrue("OS worker must upload indexed media after idle and restart", ready)
+            }
             "permission-full", "permission-partial", "permission-denied" -> {
                 val expected = when (phase) {
                     "permission-full" -> MediaAccessLevel.FULL
