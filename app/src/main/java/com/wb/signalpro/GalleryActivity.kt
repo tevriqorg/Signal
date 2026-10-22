@@ -461,7 +461,8 @@ private fun GalleryScreen(
                     } else {
                         // Plain native-style calendar timeline (no semantic header cards).
                         tiles.groupBy { tile ->
-                            if (tile.time <= 0L) "日期未知"
+                            if (state.searchResults != null) "搜索结果"
+                            else if (tile.time <= 0L) "日期未知"
                             else android.text.format.DateFormat.format("yyyy年M月d日", java.util.Date(tile.time)).toString()
                         }.forEach { (day, section) ->
                             item(key = "day:" + day, span = { GridItemSpan(3) }) {

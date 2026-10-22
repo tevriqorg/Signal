@@ -84,6 +84,8 @@ class SignalGalleryEndToEndInstrumentedTest {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val device = UiDevice.getInstance(instrumentation)
         val app = context
+        device.wakeUp()
+        device.executeShellCommand("wm dismiss-keyguard")
         val activity = instrumentation.startActivitySync(Intent(app, GalleryActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         try {
@@ -98,7 +100,11 @@ class SignalGalleryEndToEndInstrumentedTest {
             device.findObject(By.text("关闭")).click()
             // Screenshot is evidence only; no assertion is based on color-pixel matching.
             device.takeScreenshot(java.io.File(app.getExternalFilesDir(null), "signal-gallery-emulator.png"))
-        } finally { activity.finish() }
+        } finally {
+            device.takeScreenshot(java.io.File(app.getExternalFilesDir(null), "signal-gallery-emulator.png"))
+            device.dumpWindowHierarchy(java.io.File(app.getExternalFilesDir(null), "gallery-window.xml"))
+            activity.finish()
+        }
     }
 
     private fun createSyntheticMedia(): Pair<MediaItem, ByteArray> {

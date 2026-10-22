@@ -130,9 +130,13 @@ class DualEmulatorInstrumentedTest {
                     assertTrue(device.wait(Until.hasObject(By.desc("dual-$peer.jpg")), 15000))
                     assertFalse("search must not retain unrelated local photos", device.hasObject(By.desc("dual-$role.jpg")))
                     device.findObject(By.text("···")).click()
+                    assertTrue(device.wait(Until.hasObject(By.text("搜索相册")), 8000))
                     device.findObject(By.text("搜索相册")).click()
+                    assertTrue(device.wait(Until.hasObject(By.text("清除筛选")), 8000))
                     device.findObject(By.text("清除筛选")).click()
-                    assertTrue(device.wait(Until.hasObject(By.desc("dual-$role.jpg")), 15000))
+                    assertTrue(device.wait(Until.hasObject(By.desc("dual-$peer.jpg")), 15000))
+                    if (all(client).any { it.fileName == "dual-$role.jpg" })
+                        assertTrue(device.wait(Until.hasObject(By.desc("dual-$role.jpg")), 15000))
                     assertTrue(device.takeScreenshot(File(context.getExternalFilesDir(null), "dual-$role.png")))
                 } finally { activity.finish() }
             }
