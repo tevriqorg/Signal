@@ -7,6 +7,7 @@ echo '[acceptance] verify prebuilt APKs'
 [[ -s app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk ]]
 sha256sum app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk > dual-evidence/apk-sha256.txt
 srv=""
+logcat_pids=()
 profile=runner-loopback
 phase_timeout=180s
 fault_attempts=120
@@ -28,7 +29,7 @@ else
   srv=$!
 fi
 printf '{"server_profile":"%s","tls_verification":"platform defaults; no bypass","fixture_run":"%s"}\n' "$profile" "${GITHUB_RUN_ID:-local}" > dual-evidence/profile.json
-trap '[[ -z "$srv" ]] || kill "$srv" 2>/dev/null || true; adb -s emulator-5556 emu kill >/dev/null 2>&1 || true' EXIT
+trap 'if [[ ${#logcat_pids[@]} -gt 0 ]]; then kill "${logcat_pids[@]}" 2>/dev/null || true; fi; [[ -z "$srv" ]] || kill "$srv" 2>/dev/null || true; adb -s emulator-5556 emu kill >/dev/null 2>&1 || true' EXIT
 echo "[acceptance] server profile: $profile; create second independent AVD"
 # Reuse the installed system image, create a distinct AVD with its own writable userdata.
 avdmanager create avd --force --name signal-peer --package 'system-images;android-35;google_apis;x86_64' --device pixel_6 <<< no
@@ -57,6 +58,8 @@ for serial in emulator-5554 emulator-5556; do
   adb -s "$serial" shell pm grant com.wb.signalpro android.permission.READ_MEDIA_IMAGES
   adb -s "$serial" shell pm grant com.wb.signalpro android.permission.READ_MEDIA_VIDEO
   adb -s "$serial" shell getprop > "dual-evidence/$serial-properties.txt"
+  adb -s "$serial" logcat -v threadtime > "dual-evidence/$serial-live-logcat.txt" 2>&1 &
+  logcat_pids+=("$!")
 done
 adb devices -l > dual-evidence/devices.txt
 [[ $(adb devices | grep -c '^emulator-.*device$') -eq 2 ]]
@@ -99,9 +102,14 @@ phase() {
   [[ "$role" == B ]] && serial=emulator-5556
   adb -s "$serial" shell input keyevent KEYCODE_WAKEUP
   adb -s "$serial" shell wm dismiss-keyguard
+  set +e
   timeout "$phase_timeout" adb -s "$serial" shell am instrument -w -r -e class com.wb.signalpro.photos.DualEmulatorInstrumentedTest -e role "$role" -e phase "$task" -e endpoint "$SIGNAL_TEST_ENDPOINT" -e enrollment "$SIGNAL_TEST_ENROLLMENT" com.wb.signalpro.test/androidx.test.runner.AndroidJUnitRunner | tee "dual-evidence/$evidence_name.txt"
-  adb -s "$serial" logcat -d > "dual-evidence/$evidence_name-logcat.txt"
-  adb -s "$serial" exec-out screencap -p > "dual-evidence/$evidence_name.png"
+  local phase_result=${PIPESTATUS[0]}
+  timeout 15s adb -s "$serial" logcat -d > "dual-evidence/$evidence_name-logcat.txt"
+  timeout 15s adb -s "$serial" exec-out screencap -p > "dual-evidence/$evidence_name.png"
+  free -m > "dual-evidence/$evidence_name-runner-memory.txt"
+  set -e
+  if [[ "$phase_result" -ne 0 ]]; then echo "FAIL: $evidence_name instrumentation exited $phase_result"; return "$phase_result"; fi
   grep -q 'OK (1 test)' "dual-evidence/$evidence_name.txt"
   ! grep -qE 'FAILURES|INSTRUMENTATION_FAILED|Process crashed' "dual-evidence/$evidence_name.txt"
 }

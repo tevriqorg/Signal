@@ -137,8 +137,15 @@ class GalleryRecoveryInstrumentedTest {
         context.getSharedPreferences("gallery-video-notice", 0).edit().clear().commit()
         assertTrue(GalleryVideoNotification.offer(context))
         assertFalse(GalleryVideoNotification.offer(context))
-        val notices = context.getSystemService(android.app.NotificationManager::class.java).activeNotifications
-        assertTrue(notices.any { it.id == 14 && it.notification.fullScreenIntent == null })
+        val manager = context.getSystemService(android.app.NotificationManager::class.java)
+        val deadline = android.os.SystemClock.elapsedRealtime() + 10000
+        var visible = false
+        while (android.os.SystemClock.elapsedRealtime() < deadline) {
+            visible = manager.activeNotifications.any { it.id == 14 && it.notification.fullScreenIntent == null }
+            if (visible) break
+            Thread.sleep(50)
+        }
+        assertTrue("notification must actually be delivered without a fullscreen intent", visible)
         context.getSystemService(android.app.NotificationManager::class.java).cancel(14)
     }
 }
