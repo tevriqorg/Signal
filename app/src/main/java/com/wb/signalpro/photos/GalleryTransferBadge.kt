@@ -37,20 +37,22 @@ internal data class GallerySource(
     val origin: GalleryOrigin,
     val deviceName: String,
     val ownerName: String? = null,
+    val localLibraryEntry: Boolean = origin == GalleryOrigin.THIS_DEVICE,
 ) {
     init {
         require(deviceName.isNotBlank())
+        require(!localLibraryEntry || origin == GalleryOrigin.THIS_DEVICE)
         if (origin == GalleryOrigin.SHARED) require(!ownerName.isNullOrBlank())
     }
 
     val label: String
-        get() = when (origin) {
-            GalleryOrigin.THIS_DEVICE -> "本机"
-            GalleryOrigin.OTHER_DEVICE -> deviceName
-            GalleryOrigin.SHARED -> "$ownerName · $deviceName"
+        get() = when {
+            localLibraryEntry -> "本机"
+            origin == GalleryOrigin.SHARED -> "$ownerName · $deviceName"
+            else -> deviceName
         }
 
-    val showCloud: Boolean get() = origin != GalleryOrigin.THIS_DEVICE
+    val showCloud: Boolean get() = !localLibraryEntry
 }
 
 internal data class GalleryTransferBadge(
@@ -58,8 +60,8 @@ internal data class GalleryTransferBadge(
     val transfer: GalleryTransferState,
 ) {
     val dot: GalleryDot
-        get() = when (source.origin) {
-            GalleryOrigin.THIS_DEVICE -> when (transfer) {
+        get() = when {
+            source.localLibraryEntry -> when (transfer) {
                 GalleryTransferState.ORIGINAL_VERIFIED -> GalleryDot.NONE
                 GalleryTransferState.UPLOAD_FAILED -> GalleryDot.RED
                 GalleryTransferState.NOT_REGISTERED,
@@ -67,7 +69,7 @@ internal data class GalleryTransferBadge(
                 GalleryTransferState.UPLOADING_ORIGINAL -> GalleryDot.AMBER
                 else -> GalleryDot.RED // invalid remote-only states must not silently appear complete
             }
-            GalleryOrigin.OTHER_DEVICE, GalleryOrigin.SHARED -> when (transfer) {
+            else -> when (transfer) {
                 GalleryTransferState.ORIGINAL_CACHED -> GalleryDot.NONE
                 GalleryTransferState.DOWNLOAD_FAILED -> GalleryDot.RED
                 GalleryTransferState.PREVIEW_ONLY,

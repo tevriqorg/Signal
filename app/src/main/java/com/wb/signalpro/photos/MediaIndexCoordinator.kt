@@ -55,6 +55,7 @@ internal class MediaIndexCoordinator(context: Context) : AutoCloseable {
                 }
                 ReconcileMode.SKIP -> Unit
             }
+            if (mode != ReconcileMode.FULL) store.pruneUnavailable(volume, source.visibleIds(volume))
             if (mode != ReconcileMode.SKIP || checkpoint == null) {
                 store.saveCheckpoint(
                     volume,

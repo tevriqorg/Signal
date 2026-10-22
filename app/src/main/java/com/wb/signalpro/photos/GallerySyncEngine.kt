@@ -16,6 +16,7 @@ import kotlinx.coroutines.sync.withLock
 internal data class DeviceMediaProgress(val name: String, val ready: Int, val total: Int, val bytes: Long)
 
 internal data class GallerySyncSnapshot(
+    val deviceId: String = "",
     val cacheGeneration: Long = 0,
     val analysisStatus: String = "",
     val devices: List<DeviceMediaProgress> = emptyList(),
@@ -86,7 +87,9 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
             if (knownVersions[id] != null && knownVersions[id] != storedVersions[id]) transfer.copy(verified = false, failed = false)
             else transfer
         }
+        val availableServerIds = knownItems.mapNotNull { locals[it.id.value]?.mediaId }.toSet()
         return GallerySyncSnapshot(
+            deviceId = client.deviceId,
             cacheGeneration = cacheGeneration,
             analysisStatus = analysisStatus,
             devices = store.allCatalog().groupBy { it.deviceId }.values.map { entries ->
@@ -94,7 +97,9 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                     entries.sumOf { it.size ?: 0L })
             },
             paired = client.paired, healthy = healthy && locals.values.none { it.failed } && remoteFailures().isEmpty() && analysisFailures == 0, description = message,
-            local = locals, remote = store.remote(client.deviceId),
+            local = locals, remote = store.allCatalog().filter { media ->
+                media.id !in availableServerIds
+            },
             transferredBytes = bytes, totalBytes = total,
             pendingUploads = knownItems.count { locals[it.id.value]?.verified != true || storedVersions[it.id.value] != knownVersions[it.id.value] },
             failures = locals.values.count { it.failed } + remoteFailures().size + analysisFailures,

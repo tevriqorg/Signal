@@ -175,7 +175,7 @@ class GalleryActivity : ComponentActivity() {
         foregroundPoll = scope.launch {
             while (isActive) {
                 delay(30_000)
-                if (sync.foreground && !ui.scanning) startSync(ui.items)
+                if (sync.foreground && !ui.scanning) refresh(false)
             }
         }
         val manager = getSystemService(android.net.ConnectivityManager::class.java)
@@ -229,8 +229,9 @@ class GalleryActivity : ComponentActivity() {
                     else coordinator.indexedMedia()
                 Triple(report.accessLevel, items, report.indexedRows)
             }.onSuccess { (access, items, count) ->
+                val changed = ui.items != items
                 ui = ui.copy(access = access, items = items, indexed = count, scanning = false)
-                startSync(items, sourceChanged = true)
+                startSync(items, sourceChanged = changed)
             }.onFailure {
                 ui = ui.copy(scanning = false, indexError = it.message)
             }
@@ -383,7 +384,7 @@ private fun GalleryScreen(
         }.toMap()
         val selected: List<Tile> = if (state.searchResults != null) remote.map { media ->
             localByServerId[media.id]?.let { Tile.Local(it) } ?: Tile.Remote(media)
-        } else (state.items.map { Tile.Local(it) } + remote.map { Tile.Remote(it) }).sortedByDescending { it.time }
+        } else (state.items.map { Tile.Local(it) } + remote.filter { it.id !in localByServerId }.map { Tile.Remote(it) }).sortedByDescending { it.time }
         selected
             .filter {
                 val kind = when (it) {
@@ -673,7 +674,7 @@ private fun remoteBadge(media: RemotePhoto, sync: GallerySyncSnapshot, failed: S
         else -> GalleryTransferState.PREVIEW_ONLY
     }
     return GalleryTransferBadge(
-        GallerySource(GalleryOrigin.OTHER_DEVICE, media.deviceName), state)
+        GallerySource(if (media.deviceId == sync.deviceId) GalleryOrigin.THIS_DEVICE else GalleryOrigin.OTHER_DEVICE, media.deviceName, localLibraryEntry = false), state)
 }
 
 @Composable

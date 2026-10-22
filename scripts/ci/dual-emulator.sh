@@ -151,3 +151,6 @@ phase A edit-offline
 adb -s emulator-5554 reverse tcp:8765 tcp:8765
 phase A recover-edited
 phase B receive-edited
+
+# User-only local cleanup must leave the central original browsable on its origin device.
+phase A archive-local

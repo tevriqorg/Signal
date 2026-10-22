@@ -35,6 +35,14 @@ internal class MediaStoreSource(private val context: Context) {
         )
     }
 
+    fun visibleIds(volumeName: String): Set<Long> = buildSet {
+        resolver.query(MediaStore.Files.getContentUri(volumeName), arrayOf(MediaStore.Files.FileColumns._ID),
+            "(${MediaStore.Files.FileColumns.MEDIA_TYPE}=? OR ${MediaStore.Files.FileColumns.MEDIA_TYPE}=?) AND ${MediaStore.MediaColumns.IS_PENDING}=0",
+            arrayOf(MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE.toString(), MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString()), null)?.use { cursor ->
+            while (cursor.moveToNext()) add(cursor.getLong(0))
+        }
+    }
+
     fun query(volumeName: String, afterGeneration: Long?): List<ScannedMedia> {
         val filesUri = MediaStore.Files.getContentUri(volumeName)
         val generationColumn = if (Build.VERSION.SDK_INT >= 30) {
@@ -55,7 +63,7 @@ internal class MediaStoreSource(private val context: Context) {
             MediaStore.MediaColumns.RELATIVE_PATH,
             MediaStore.MediaColumns.DISPLAY_NAME,
         )
-        val baseSelection = "(${MediaStore.Files.FileColumns.MEDIA_TYPE}=? OR ${MediaStore.Files.FileColumns.MEDIA_TYPE}=?)"
+        val baseSelection = "(${MediaStore.Files.FileColumns.MEDIA_TYPE}=? OR ${MediaStore.Files.FileColumns.MEDIA_TYPE}=?) AND ${MediaStore.MediaColumns.IS_PENDING}=0"
         val incremental = Build.VERSION.SDK_INT >= 30 && afterGeneration != null
         val selection = if (incremental) {
             "$baseSelection AND ${MediaStore.MediaColumns.GENERATION_MODIFIED}>?"

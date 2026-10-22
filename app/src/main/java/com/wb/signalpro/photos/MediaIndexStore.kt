@@ -67,7 +67,7 @@ internal class MediaIndexStore(context: Context) : SQLiteOpenHelper(context, DB_
     }
 
     override suspend fun list(limit: Int, offset: Int): List<MediaItem> = readableDatabase.rawQuery(
-        "SELECT * FROM media_items ORDER BY COALESCE(captured_at, added_at) DESC LIMIT ? OFFSET ?",
+        "SELECT * FROM media_items ORDER BY COALESCE(captured_at, added_at) DESC,media_store_id DESC,local_id LIMIT ? OFFSET ?",
         arrayOf(limit.coerceIn(1, 10_000).toString(), offset.coerceAtLeast(0).toString()),
     ).use { cursor -> cursor.toMediaItems() }
 
@@ -109,6 +109,20 @@ internal class MediaIndexStore(context: Context) : SQLiteOpenHelper(context, DB_
         } finally {
             db.endTransaction()
         }
+    }
+
+    fun pruneUnavailable(volume: String, visible: Set<Long>) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val removed = ArrayList<String>()
+            db.rawQuery("SELECT local_id,media_store_id FROM media_items WHERE volume_name=?", arrayOf(volume)).use { cursor ->
+                while (cursor.moveToNext()) if (cursor.getLong(1) !in visible) removed.add(cursor.getString(0))
+            }
+            removed.forEach { db.delete("media_items", "local_id=?", arrayOf(it)) }
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+        // This prunes only derived index rows, never phone originals or server archives.
     }
 
     fun upsertScanned(rows: List<ScannedMedia>) {

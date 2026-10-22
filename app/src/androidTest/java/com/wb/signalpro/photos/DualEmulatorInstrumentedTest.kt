@@ -331,6 +331,27 @@ class DualEmulatorInstrumentedTest {
                 cover.recycle()
                 assertEquals(1, all(client).count { it.fileName == "dual-A.jpg" })
             }
+            "archive-local" -> {
+                val client = client()
+                val media = all(client).first { it.fileName == "dual-$role.jpg" }
+                val coordinator = MediaIndexCoordinator(context)
+                try {
+                    coordinator.reconcile(true)
+                    val item = coordinator.indexedMedia().first { it.displayName == "dual-$role.jpg" }
+                    assertEquals(1, context.contentResolver.delete(android.net.Uri.parse(item.contentUri), null, null))
+                    coordinator.reconcile(false)
+                    val remaining = coordinator.indexedMedia()
+                    assertFalse(remaining.any { it.id == item.id })
+                    GallerySyncEngine(context).use { engine ->
+                        engine.foreground = true
+                        engine.synchronize(remaining) { }
+                        assertTrue(engine.snapshot(true, "").remote.any { it.id == media.id && it.deviceId == client.deviceId })
+                    }
+                    assertTrue(all(client).first { it.id == media.id }.originalReady)
+                    val original = client.fetchOriginal(media) { _, _ -> }
+                    assertEquals(media.sha256, sha(original.readBytes()))
+                } finally { coordinator.close() }
+            }
             "permission-full", "permission-partial", "permission-denied" -> {
                 val expected = when (phase) {
                     "permission-full" -> MediaAccessLevel.FULL
