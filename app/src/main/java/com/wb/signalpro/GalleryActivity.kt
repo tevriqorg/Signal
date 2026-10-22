@@ -1,6 +1,7 @@
 package com.wb.signalpro
 
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.util.Size
@@ -17,10 +18,8 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -37,6 +36,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -52,73 +52,78 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.foundation.Canvas
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.wb.signalpro.data.model.MediaItem
 import com.wb.signalpro.data.model.MediaType
-import com.wb.signalpro.photos.CandidateBoundaryReason
-import com.wb.signalpro.photos.CandidateGroup
 import com.wb.signalpro.photos.CandidateGroupSegmenter
-import com.wb.signalpro.photos.GalleryCloudHealth
 import com.wb.signalpro.photos.GalleryDot
+import com.wb.signalpro.photos.GalleryOrigin
+import com.wb.signalpro.photos.GallerySource
+import com.wb.signalpro.photos.GallerySyncEngine
+import com.wb.signalpro.photos.GallerySyncSnapshot
 import com.wb.signalpro.photos.GalleryTransferBadge
+import com.wb.signalpro.photos.GalleryTransferState
+import com.wb.signalpro.photos.LocalTransfer
 import com.wb.signalpro.photos.MediaAccessLevel
 import com.wb.signalpro.photos.MediaChangeObserver
 import com.wb.signalpro.photos.MediaIndexCoordinator
 import com.wb.signalpro.photos.MediaPermissionPolicy
+import com.wb.signalpro.photos.RemotePhoto
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/**
- * Issue #14 Android-first gallery. Only MediaStore is available in this increment.
- * Do not invent server assets, remote device names, or a green sync status until the
- * independently authenticated Signal Server flow is implemented and verified.
- */
+private val Subtle = Color(0xFF8E8E93)
+private val SurfaceTint = Color(0xFFF2F2F7)
+private val Amber = Color(0xFFE5A32A)
+private val Red = Color(0xFFD94141)
+private val Green = Color(0xFF26975E)
+private val Blue = Color(0xFF3179C8)
+
 class GalleryActivity : ComponentActivity() {
     private lateinit var coordinator: MediaIndexCoordinator
+    private lateinit var sync: GallerySyncEngine
     private var observer: MediaChangeObserver? = null
     private val scope = MainScope()
-    private var uiState by mutableStateOf(GalleryUiState())
+    private var ui by mutableStateOf(GalleryUiState())
 
-    private val permissionLauncher = registerForActivityResult(
+    private val requestPermissions = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { refresh(forceFull = true) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         coordinator = MediaIndexCoordinator(this)
+        sync = GallerySyncEngine(this)
         window.statusBarColor = android.graphics.Color.WHITE
         window.navigationBarColor = android.graphics.Color.WHITE
         window.decorView.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or
             android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        ui = ui.copy(sync = sync.snapshot(false, "尚未连接"))
         setContent {
-            MaterialTheme(
-                colorScheme = lightColorScheme(
-                    primary = Color(0xFF1C1C1E),
-                    onPrimary = Color.White,
-                    background = Color.White,
-                    surface = Color.White,
-                    onSurface = Color(0xFF1C1C1E),
-                    error = Color(0xFFD94141),
-                ),
-            ) {
-                GalleryScreen(
-                    state = uiState,
+            MaterialTheme(colorScheme = lightColorScheme(
+                primary = Color(0xFF212126), onPrimary = Color.White,
+                background = Color.White, surface = Color.White, onSurface = Color(0xFF212126),
+            )) {
+                GalleryScreen(ui,
                     onBack = { finish() },
                     onRequestAccess = { requestMediaAccess() },
                     onRefresh = { refresh(forceFull = true) },
+                    onSync = { startSync(ui.items) },
+                    onPair = { url, code, device -> pair(url, code, device) },
+                    onSearch = { search(it) },
+                    onLoadRemote = { loadOriginal(it) },
                     onOpenVideo = { openVideo(it) },
+                    onRemotePreview = { remote -> sync.loadPreview(remote) },
                 )
             }
         }
@@ -126,29 +131,102 @@ class GalleryActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        observer = coordinator.newObserver { refresh(forceFull = false) }.also { it.register() }
+        sync.foreground = true
+        observer = coordinator.newObserver { refresh(false) }.also { it.register() }
     }
 
-    override fun onResume() {
-        super.onResume()
-        refresh(forceFull = false)
-    }
-
+    override fun onResume() { super.onResume(); refresh(false) }
     override fun onStop() {
+        sync.foreground = false
         observer?.unregister()
         observer = null
         super.onStop()
     }
-
     override fun onDestroy() {
-        scope.cancel()
+        sync.close()
         coordinator.close()
+        scope.cancel()
         super.onDestroy()
     }
 
     private fun requestMediaAccess() {
         val permissions = MediaPermissionPolicy.requestedPermissions()
-        if (permissions.isNotEmpty()) permissionLauncher.launch(permissions)
+        if (permissions.isNotEmpty()) requestPermissions.launch(permissions)
+    }
+
+    private fun refresh(forceFull: Boolean) {
+        if (ui.scanning) return
+        scope.launch {
+            ui = ui.copy(scanning = true, indexError = null)
+            runCatching {
+                val report = coordinator.reconcile(forceFull)
+                val items = if (report.accessLevel == MediaAccessLevel.DENIED) emptyList()
+                    else coordinator.indexedMedia()
+                Triple(report.accessLevel, items, report.indexedRows)
+            }.onSuccess { (access, items, count) ->
+                ui = ui.copy(access = access, items = items, indexed = count, scanning = false)
+                startSync(items)
+            }.onFailure {
+                ui = ui.copy(scanning = false, indexError = it.message)
+            }
+        }
+    }
+
+    private fun startSync(items: List<MediaItem>) {
+        if (ui.syncRunning) return
+        scope.launch {
+            ui = ui.copy(syncRunning = true)
+            try {
+                sync.synchronize(items) { snapshot ->
+                    scope.launch { ui = ui.copy(sync = snapshot) }
+                }
+            } finally { ui = ui.copy(syncRunning = false) }
+        }
+    }
+
+    private fun pair(url: String, key: String, name: String) {
+        scope.launch {
+            ui = ui.copy(sync = ui.sync.copy(description = "正在连接服务器…"))
+            runCatching { sync.pair(url, key, name) }
+                .onSuccess {
+                    ui = ui.copy(sync = it)
+                    startSync(ui.items)
+                }.onFailure {
+                    ui = ui.copy(sync = ui.sync.copy(healthy = false,
+                        description = "配对失败：" + (it.message ?: "未知错误")))
+                }
+        }
+    }
+
+    private fun search(query: String) {
+        scope.launch {
+            if (query.isBlank()) {
+                ui = ui.copy(searchResults = null)
+            } else {
+                runCatching { sync.search(query) }
+                    .onSuccess { ui = ui.copy(searchResults = it, searchError = null) }
+                    .onFailure { ui = ui.copy(searchResults = emptyList(), searchError = it.message) }
+            }
+        }
+    }
+
+    private fun loadOriginal(media: RemotePhoto) {
+        ui = ui.copy(selected = Selected.Remote(media), loadingRemote = true, remoteError = null)
+        scope.launch {
+            runCatching {
+                sync.loadOriginal(media) { done, total ->
+                    scope.launch {
+                        ui = ui.copy(sync = ui.sync.copy(transferredBytes = done,
+                            totalBytes = total, activeTransfer = media.fileName))
+                    }
+                }
+            }.onSuccess {
+                ui = ui.copy(loadingRemote = false, selected = Selected.Remote(media),
+                    remoteError = null)
+            }.onFailure {
+                ui = ui.copy(loadingRemote = false, remoteError = it.message ?: "下载失败")
+            }
+        }
     }
 
     private fun openVideo(item: MediaItem) {
@@ -158,46 +236,39 @@ class GalleryActivity : ComponentActivity() {
         }
         runCatching { startActivity(intent) }
     }
-
-    private fun refresh(forceFull: Boolean) {
-        if (uiState.scanning) return
-        scope.launch {
-            uiState = uiState.copy(scanning = true, error = null)
-            runCatching {
-                val report = coordinator.reconcile(forceFull)
-                val items = if (report.accessLevel == MediaAccessLevel.DENIED) emptyList()
-                    else coordinator.indexedMedia()
-                GalleryUiState(
-                    accessLevel = report.accessLevel,
-                    items = items,
-                    scanning = false,
-                    indexedThisPass = report.indexedRows,
-                    error = null,
-                )
-            }.onSuccess {
-                uiState = it
-            }.onFailure {
-                uiState = uiState.copy(scanning = false, error = it.message ?: it.javaClass.simpleName)
-            }
-        }
-    }
 }
 
-private enum class GalleryFilter { PHOTOS, VIDEOS, SCREENSHOTS }
-
 private data class GalleryUiState(
-    val accessLevel: MediaAccessLevel = MediaAccessLevel.DENIED,
+    val access: MediaAccessLevel = MediaAccessLevel.DENIED,
     val items: List<MediaItem> = emptyList(),
+    val indexed: Int = 0,
     val scanning: Boolean = false,
-    val indexedThisPass: Int = 0,
-    val error: String? = null,
+    val indexError: String? = null,
+    val sync: GallerySyncSnapshot = GallerySyncSnapshot(),
+    val syncRunning: Boolean = false,
+    val selected: Selected? = null,
+    val loadingRemote: Boolean = false,
+    val remoteError: String? = null,
+    val searchResults: List<RemotePhoto>? = null,
+    val searchError: String? = null,
 )
 
-private val SubtleGray = Color(0xFF8E8E93)
-private val TileBg = Color(0xFFF2F2F7)
-private val SyncAmber = Color(0xFFE5A32A)
-private val SyncRed = Color(0xFFD94141)
-private val SyncGreen = Color(0xFF2E995B)
+private sealed class Selected {
+    data class Local(val item: MediaItem): Selected()
+    data class Remote(val item: RemotePhoto): Selected()
+}
+private sealed class Tile {
+    data class Local(val item: MediaItem): Tile()
+    data class Remote(val item: RemotePhoto): Tile()
+    val key: String get() = when (this) {
+        is Local -> "local:" + item.id.value
+        is Remote -> "remote:" + item.id
+    }
+    val time: Long get() = when (this) {
+        is Local -> item.capturedAtEpochMs ?: item.addedAtEpochMs
+        is Remote -> item.capturedAt
+    }
+}
 
 @Composable
 private fun GalleryScreen(
@@ -205,151 +276,141 @@ private fun GalleryScreen(
     onBack: () -> Unit,
     onRequestAccess: () -> Unit,
     onRefresh: () -> Unit,
+    onSync: () -> Unit,
+    onPair: (String, String, String) -> Unit,
+    onSearch: (String) -> Unit,
+    onLoadRemote: (RemotePhoto) -> Unit,
     onOpenVideo: (MediaItem) -> Unit,
+    onRemotePreview: suspend (RemotePhoto) -> java.io.File,
 ) {
-    var filter by remember { mutableStateOf(GalleryFilter.PHOTOS) }
-    // G2 remains available in the overflow; default is the clean, chronological photo wall.
-    var groupedView by remember { mutableStateOf(false) }
-    var showOverflow by remember { mutableStateOf(false) }
+    var filter by remember { mutableStateOf("照片") }
+    var grouped by remember { mutableStateOf(false) }
+    var overflow by remember { mutableStateOf(false) }
     var showSync by remember { mutableStateOf(false) }
-    var openedItem by remember { mutableStateOf<MediaItem?>(null) }
+    var showPair by remember { mutableStateOf(false) }
+    var showSearch by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    var localSelected by remember { mutableStateOf<MediaItem?>(null) }
+    var remoteSelected by remember { mutableStateOf<RemotePhoto?>(null) }
+    var remoteFailed by remember { mutableStateOf(setOf<String>()) }
 
-    val visible = when (filter) {
-        GalleryFilter.PHOTOS -> state.items.filter {
-            it.mediaType == MediaType.PHOTO || it.mediaType == MediaType.SCREENSHOT
-        }
-        GalleryFilter.VIDEOS -> state.items.filter { it.mediaType == MediaType.VIDEO }
-        GalleryFilter.SCREENSHOTS -> state.items.filter { it.mediaType == MediaType.SCREENSHOT }
-    }
-    val groups = remember(visible, groupedView) {
-        if (groupedView) CandidateGroupSegmenter.segment(visible) else emptyList()
-    }
-
-    // No server endpoint/session exists in this increment: connection must not show green.
-    val cloudHealth = GalleryCloudHealth.NEEDS_ATTENTION
-
-    Surface(modifier = Modifier.fillMaxSize(), color = Color.White) {
-        Column(modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 12.dp, top = 4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TextButton(onClick = onBack) {
-                    Text("‹ 返回", color = Color(0xFF3A78BB), fontSize = 15.sp)
+    val remote = state.searchResults ?: state.sync.remote
+    val tiles = remember(state.items, remote, filter) {
+        (state.items.map { Tile.Local(it) } + remote.map { Tile.Remote(it) })
+            .filter {
+                val kind = when (it) {
+                    is Tile.Local -> it.item.mediaType.name.lowercase()
+                    is Tile.Remote -> it.item.kind.lowercase()
                 }
+                when (filter) {
+                    "视频" -> kind == "video"
+                    "截图" -> kind == "screenshot"
+                    else -> kind != "video"
+                }
+            }.sortedByDescending { it.time }
+    }
+
+    Surface(color = Color.White, modifier = Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 6.dp, end = 12.dp, top = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onBack) { Text("‹ 返回", color = Blue, fontSize = 15.sp) }
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = { showSync = true }) {
-                    CloudGlyph(
-                        color = if (cloudHealth == GalleryCloudHealth.HEALTHY) SyncGreen else SyncRed,
-                        modifier = Modifier.size(25.dp),
-                    )
+                    Text("☁", color = if (state.sync.healthy) Green else Red, fontSize = 24.sp)
                 }
                 Box {
-                    TextButton(onClick = { showOverflow = true }) {
-                        Text("···", color = Color(0xFF333338), fontSize = 25.sp, fontWeight = FontWeight.Bold)
+                    TextButton(onClick = { overflow = true }) {
+                        Text("···", fontSize = 23.sp, color = Color(0xFF242428))
                     }
-                    DropdownMenu(expanded = showOverflow, onDismissRequest = { showOverflow = false }) {
-                        DropdownMenuItem(
-                            text = { Text(if (groupedView) "按时间排列" else "显示候选分组") },
-                            onClick = { groupedView = !groupedView; showOverflow = false },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("重新扫描本机") },
-                            onClick = { showOverflow = false; onRefresh() },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("同步与存储") },
-                            onClick = { showOverflow = false; showSync = true },
-                        )
+                    DropdownMenu(expanded = overflow, onDismissRequest = { overflow = false }) {
+                        DropdownMenuItem(text = { Text("搜索相册") }, onClick = { overflow = false; showSearch = true })
+                        DropdownMenuItem(text = { Text(if (grouped) "显示原始时间轴" else "显示候选分组") },
+                            onClick = { grouped = !grouped; overflow = false })
+                        DropdownMenuItem(text = { Text("重新扫描与同步") },
+                            onClick = { overflow = false; onRefresh() })
                     }
                 }
             }
-            Text(
-                "照片",
-                modifier = Modifier.padding(start = 18.dp, bottom = 13.dp),
-                fontSize = 34.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFF1C1C1E),
-            )
-            Row(
-                modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 11.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                AlbumFilter("照片", filter == GalleryFilter.PHOTOS) { filter = GalleryFilter.PHOTOS }
-                AlbumFilter("视频", filter == GalleryFilter.VIDEOS) { filter = GalleryFilter.VIDEOS }
-                AlbumFilter("截图", filter == GalleryFilter.SCREENSHOTS) { filter = GalleryFilter.SCREENSHOTS }
+            Text("照片", Modifier.padding(start = 17.dp, bottom = 12.dp),
+                fontSize = 34.sp, fontWeight = FontWeight.Bold, color = Color(0xFF202024))
+            Row(Modifier.padding(start = 13.dp, bottom = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("照片", "视频", "截图").forEach { name ->
+                    Text(name,
+                        modifier = Modifier.clip(RoundedCornerShape(20.dp))
+                            .background(if (filter == name) Color(0xFF252529) else SurfaceTint)
+                            .clickable { filter = name }.padding(horizontal = 17.dp, vertical = 8.dp),
+                        color = if (filter == name) Color.White else Color(0xFF48484F),
+                        fontSize = 13.sp)
+                }
             }
-
-            if (state.accessLevel != MediaAccessLevel.FULL) {
-                Row(
-                    modifier = Modifier.fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 5.dp)
-                        .clip(RoundedCornerShape(11.dp))
-                        .background(Color(0xFFF2F2F7))
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+            if (state.access != MediaAccessLevel.FULL) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 13.dp, vertical = 3.dp)
+                    .clip(RoundedCornerShape(10.dp)).background(SurfaceTint)
+                    .padding(horizontal = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (state.access == MediaAccessLevel.PARTIAL) "仅部分相册可访问" else "授权后才能浏览本机相册",
+                        fontSize = 12.sp, color = Subtle, modifier = Modifier.weight(1f))
+                    TextButton(onClick = onRequestAccess) { Text("调整", fontSize = 12.sp, color = Blue) }
+                }
+            }
+            if (state.indexError != null) {
+                Text("索引异常：" + state.indexError, color = Red, fontSize = 12.sp,
+                    modifier = Modifier.padding(12.dp))
+            }
+            if (state.scanning && tiles.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = Subtle)
+                }
+            } else if (tiles.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("当前还没有这一类照片", color = Subtle)
+                }
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(3), modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    Text(
-                        if (state.accessLevel == MediaAccessLevel.PARTIAL) "仅部分相册可访问"
-                        else "请授权访问相册",
-                        modifier = Modifier.weight(1f),
-                        fontSize = 12.sp,
-                        color = Color(0xFF4C4C52),
-                    )
-                    TextButton(onClick = onRequestAccess) {
-                        Text(if (state.accessLevel == MediaAccessLevel.PARTIAL) "调整" else "授权", fontSize = 12.sp)
-                    }
-                }
-            }
-            if (state.error != null) {
-                Text(
-                    "本机相册索引异常 · 可从右上角菜单重试",
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 7.dp),
-                    color = SyncRed,
-                    fontSize = 12.sp,
-                )
-            }
-            if (state.scanning && state.items.isNotEmpty()) {
-                Text("更新照片中…", modifier = Modifier.padding(horizontal = 16.dp), color = SubtleGray, fontSize = 11.sp)
-            }
-
-            when {
-                state.scanning && state.items.isEmpty() -> {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = SubtleGray)
-                    }
-                }
-                state.accessLevel == MediaAccessLevel.DENIED -> {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("授权后即可浏览本机照片", color = SubtleGray)
-                    }
-                }
-                visible.isEmpty() -> {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("目前没有这一类照片或视频", color = SubtleGray)
-                    }
-                }
-                else -> {
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(3),
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(bottom = 28.dp),
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
-                    ) {
-                        if (groupedView) {
-                            groups.forEach { group ->
-                                item(key = "header:${group.id}", span = { GridItemSpan(3) }) {
-                                    CandidateHeader(group)
-                                }
-                                items(group.items, key = { it.id.value }) { item ->
-                                    MediaTile(item, GalleryTransferBadge.localPending(), onClick = { openedItem = item })
+                    if (grouped) {
+                        // Preserve G2's deterministic grouping as an optional diagnostic layer.
+                        val local = tiles.filterIsInstance<Tile.Local>().map { it.item }
+                        CandidateGroupSegmenter.segment(local).forEach { group ->
+                            item(key = "group:" + group.id, span = { GridItemSpan(3) }) {
+                                Text("候选事件 · " + group.items.size + " 项",
+                                    Modifier.padding(start = 13.dp, top = 15.dp, bottom = 7.dp),
+                                    fontSize = 14.sp, color = Subtle)
+                            }
+                            items(group.items, key = { "local:" + it.id.value }) { item ->
+                                GalleryCell(item, localBadge(item, state.sync.local[item.id.value])) {
+                                    localSelected = item
                                 }
                             }
-                        } else {
-                            items(visible, key = { it.id.value }) { item ->
-                                MediaTile(item, GalleryTransferBadge.localPending(), onClick = { openedItem = item })
+                        }
+                        items(tiles.filterIsInstance<Tile.Remote>(), key = { it.key }) { tile ->
+                            val media = tile.item
+                            RemoteCell(media, remoteBadge(media, state.sync, remoteFailed),
+                                onRemotePreview, onClick = { remoteSelected = media; onLoadRemote(media) },
+                                onFailed = { remoteFailed = remoteFailed + media.id })
+                        }
+                    } else {
+                        items(tiles, key = { it.key }) { tile ->
+                            when (tile) {
+                                is Tile.Local -> GalleryCell(tile.item,
+                                    localBadge(tile.item, state.sync.local[tile.item.id.value])) {
+                                        localSelected = tile.item
+                                    }
+                                is Tile.Remote -> {
+                                    val media = tile.item
+                                    RemoteCell(media, remoteBadge(media, state.sync, remoteFailed),
+                                        onRemotePreview,
+                                        onClick = { remoteSelected = media; onLoadRemote(media) },
+                                        onFailed = { remoteFailed = remoteFailed + media.id })
+                                }
                             }
                         }
                     }
@@ -359,166 +420,225 @@ private fun GalleryScreen(
     }
 
     if (showSync) {
-        AlertDialog(
-            onDismissRequest = { showSync = false },
+        AlertDialog(onDismissRequest = { showSync = false },
             title = { Text("同步与存储") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Signal Server 尚未接入", fontWeight = FontWeight.SemiBold, color = SyncRed)
-                    Text("当前 Android 增量只读取本机授权相册，不上传任何照片。黄点表示原件尚未在服务器确认保存。", fontSize = 13.sp)
-                    Text("已索引：${state.items.size} 项 · 本轮更新：${state.indexedThisPass} 项", fontSize = 13.sp)
-                    state.error?.let { Text("索引错误：$it", color = SyncRed, fontSize = 12.sp) }
+                Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Text(state.sync.description,
+                        color = if (state.sync.healthy) Green else Red, fontWeight = FontWeight.SemiBold)
+                    Text("本机索引：" + state.items.size + " 项 · 其他设备：" + state.sync.remote.size + " 项",
+                        fontSize = 13.sp)
+                    Text("待上传：" + state.sync.pendingUploads + " · 异常：" + state.sync.failures,
+                        fontSize = 13.sp)
+                    if (state.sync.activeTransfer.isNotBlank() && state.sync.totalBytes > 0)
+                        Text("传输：" + state.sync.activeTransfer + " · " +
+                            (state.sync.transferredBytes * 100 / state.sync.totalBytes) + "%",
+                            fontSize = 13.sp)
+                    Text(if (state.sync.paired) "服务器已配对" else "尚未配对服务器",
+                        fontSize = 12.sp, color = Subtle)
+                    if (!state.sync.paired)
+                        TextButton(onClick = { showSync = false; showPair = true }) { Text("配对 Signal Server") }
+                    Text("视频原件优先在高速 Wi-Fi 且 App 保持前台时传输。",
+                        fontSize = 12.sp, color = Subtle)
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showSync = false }) { Text("关闭") }
+                TextButton(onClick = { onSync(); showSync = false }) { Text("重试同步") }
             },
             dismissButton = {
-                TextButton(onClick = { onRefresh(); showSync = false }) { Text("重新扫描") }
+                TextButton(onClick = { showSync = false }) { Text("关闭") }
+            })
+    }
+
+    if (showPair) {
+        var url by remember { mutableStateOf("") }
+        var secret by remember { mutableStateOf("") }
+        var device by remember { mutableStateOf(android.os.Build.MODEL ?: "Android") }
+        AlertDialog(
+            onDismissRequest = { showPair = false },
+            title = { Text("连接私人相册服务器") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedTextField(value = url, onValueChange = { url = it }, label = { Text("HTTPS 服务器地址") },
+                        singleLine = true)
+                    OutlinedTextField(value = device, onValueChange = { device = it }, label = { Text("设备名") },
+                        singleLine = true)
+                    OutlinedTextField(value = secret, onValueChange = { secret = it },
+                        label = { Text("配对密钥") }, visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true)
+                    Text("配对完成后使用 Android KeyStore 保存设备凭据；配对密钥不存储。",
+                        fontSize = 11.sp, color = Subtle)
+                }
             },
+            confirmButton = {
+                TextButton(onClick = { showPair = false; onPair(url, secret, device) },
+                    enabled = url.isNotBlank() && secret.length >= 16 && device.isNotBlank()) { Text("连接") }
+            },
+            dismissButton = { TextButton(onClick = { showPair = false }) { Text("取消") } }
         )
     }
-    openedItem?.let { item ->
-        GalleryViewer(
-            item = item,
-            onDismiss = { openedItem = null },
-            onOpenVideo = { onOpenVideo(item) },
+
+    if (showSearch) {
+        AlertDialog(
+            onDismissRequest = { showSearch = false },
+            title = { Text("搜索照片") },
+            text = {
+                Column {
+                    OutlinedTextField(value = query, onValueChange = { query = it },
+                        label = { Text("关键词") }, singleLine = true)
+                    Text("当前支持文件名、设备名和元数据检索；AI 视觉理解尚未接入。",
+                        color = Subtle, fontSize = 11.sp)
+                    state.searchError?.let { Text(it, color = Red, fontSize = 11.sp) }
+                }
+            },
+            confirmButton = { TextButton(onClick = { onSearch(query); showSearch = false }) { Text("搜索") } },
+            dismissButton = { TextButton(onClick = { onSearch(""); showSearch = false }) { Text("清除筛选") } }
         )
     }
-}
 
-@Composable
-private fun AlbumFilter(label: String, selected: Boolean, onClick: () -> Unit) {
-    Text(
-        label,
-        modifier = Modifier
-            .clip(RoundedCornerShape(18.dp))
-            .background(if (selected) Color(0xFF252528) else Color(0xFFF2F2F7))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 17.dp, vertical = 8.dp),
-        color = if (selected) Color.White else Color(0xFF44444A),
-        fontSize = 13.sp,
-        fontWeight = FontWeight.Medium,
-    )
-}
-
-@Composable
-private fun CandidateHeader(group: CandidateGroup) {
-    val reason = when (group.boundaryReason) {
-        CandidateBoundaryReason.START -> "时间轴起点"
-        CandidateBoundaryReason.TIME_GAP -> "较长时间间隔"
-        CandidateBoundaryReason.SCREENSHOT_CAMERA_TRANSITION -> "截图与相机切换"
-        CandidateBoundaryReason.BUCKET_TRANSITION -> "相册目录变化"
+    localSelected?.let { item ->
+        MediaViewer(item.contentUri, item.displayName ?: "本机照片", "本机原件",
+            onClose = { localSelected = null },
+            isVideo = item.mediaType == MediaType.VIDEO,
+            onOpenVideo = { onOpenVideo(item) })
     }
-    Column(modifier = Modifier.fillMaxWidth().padding(start = 14.dp, top = 16.dp, bottom = 7.dp)) {
-        Text("候选分组 · ${group.items.size} 项", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-        Text(reason, fontSize = 11.sp, color = SubtleGray)
-    }
-}
-
-@Composable
-private fun MediaTile(item: MediaItem, badge: GalleryTransferBadge, onClick: () -> Unit) {
-    val bitmap = rememberMediaBitmap(item.contentUri, 360)
-    Box(
-        modifier = Modifier.fillMaxWidth().aspectRatio(1f).background(TileBg).clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (bitmap != null) {
-            Image(bitmap = bitmap, contentDescription = item.displayName, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-        } else {
-            Text(if (item.mediaType == MediaType.VIDEO) "视频" else "照片", fontSize = 11.sp, color = SubtleGray)
+    remoteSelected?.let { media ->
+        val context = LocalContext.current
+        val file = remember(state.loadingRemote, media.id) {
+            java.io.File(java.io.File(context.filesDir, "gallery-originals"), media.id).takeIf { it.isFile }
         }
+        if (state.loadingRemote) {
+            AlertDialog(onDismissRequest = { remoteSelected = null },
+                title = { Text("下载原件中…") },
+                text = { CircularProgressIndicator() },
+                confirmButton = { TextButton(onClick = { remoteSelected = null }) { Text("隐藏") } })
+        } else if (file == null) {
+            AlertDialog(onDismissRequest = { remoteSelected = null },
+                title = { Text("暂时无法打开原件") },
+                text = { Text(state.remoteError ?: "云端原件仍在等待上传；此时不会自动误报完成。") },
+                confirmButton = { TextButton(onClick = { remoteSelected = null }) { Text("关闭") } })
+        } else {
+            MediaViewer("file://" + file.absolutePath,
+                media.deviceName + " · " + media.fileName, "完整原件已缓存",
+                onClose = { remoteSelected = null }, isVideo = media.isVideo,
+                onOpenVideo = {})
+        }
+    }
+}
+
+private fun localBadge(item: MediaItem, transfer: LocalTransfer?): GalleryTransferBadge {
+    val state = when {
+        transfer?.verified == true -> GalleryTransferState.ORIGINAL_VERIFIED
+        transfer?.failed == true -> GalleryTransferState.UPLOAD_FAILED
+        transfer == null -> GalleryTransferState.NOT_REGISTERED
+        else -> GalleryTransferState.METADATA_ONLY
+    }
+    return GalleryTransferBadge(GallerySource(GalleryOrigin.THIS_DEVICE, "本机"), state)
+}
+
+@Composable
+private fun remoteBadge(media: RemotePhoto, sync: GallerySyncSnapshot, failed: Set<String>): GalleryTransferBadge {
+    val context = LocalContext.current
+    val original = remember(sync.remote, media.id) {
+        java.io.File(java.io.File(context.filesDir, "gallery-originals"), media.id).takeIf { it.isFile }
+    }
+    val state = when {
+        media.id in failed -> GalleryTransferState.DOWNLOAD_FAILED
+        original != null -> GalleryTransferState.ORIGINAL_CACHED
+        else -> GalleryTransferState.PREVIEW_ONLY
+    }
+    return GalleryTransferBadge(
+        GallerySource(GalleryOrigin.OTHER_DEVICE, media.deviceName), state)
+}
+
+@Composable
+private fun GalleryCell(item: MediaItem, badge: GalleryTransferBadge, onClick: () -> Unit) {
+    val preview = mediaBitmap(item.contentUri, 360)
+    GalleryTile(preview, item.displayName ?: "照片", badge,
+        item.mediaType == MediaType.VIDEO, onClick)
+}
+
+@Composable
+private fun RemoteCell(media: RemotePhoto, badge: GalleryTransferBadge,
+    loadPreview: suspend (RemotePhoto) -> java.io.File, onClick: () -> Unit, onFailed: () -> Unit) {
+    val path by produceState<String?>(initialValue = null, media.id, media.thumbReady) {
+        value = runCatching { loadPreview(media).absolutePath }
+            .onFailure { if (media.thumbReady) onFailed() }.getOrNull()
+    }
+    val preview = mediaBitmap(path?.let { "file://" + it }, 360)
+    GalleryTile(preview, media.fileName, badge, media.isVideo, onClick)
+}
+
+@Composable
+private fun GalleryTile(image: ImageBitmap?, description: String, badge: GalleryTransferBadge,
+    video: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier.fillMaxWidth().aspectRatio(1f).background(SurfaceTint).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        if (image == null) Text(if (video) "视频" else "照片", color = Subtle, fontSize = 10.sp)
+        else Image(image, contentDescription = description, modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop)
         Row(
             modifier = Modifier.align(Alignment.BottomStart).padding(5.dp)
-                .clip(RoundedCornerShape(5.dp))
-                .background(Color.Black.copy(alpha = 0.52f))
+                .clip(RoundedCornerShape(5.dp)).background(Color.Black.copy(alpha = 0.48f))
                 .padding(horizontal = 5.dp, vertical = 3.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(3.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp)
         ) {
-            if (badge.source.showCloud) CloudGlyph(color = Color.White, modifier = Modifier.size(11.dp))
-            Text(badge.source.label, fontSize = 9.sp, color = Color.White, maxLines = 1)
+            Text(if (badge.source.showCloud) "☁ " + badge.source.label else "▯ 本机",
+                maxLines = 1, fontSize = 9.sp, color = Color.White)
         }
         if (badge.dot != GalleryDot.NONE) {
-            Box(
-                modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)
-                    .size(8.dp)
-                    .background(if (badge.dot == GalleryDot.RED) SyncRed else SyncAmber, CircleShape),
-            )
+            Box(Modifier.align(Alignment.BottomEnd).padding(8.dp)
+                .size(8.dp).background(if (badge.dot == GalleryDot.RED) Red else Amber, CircleShape))
         }
-        if (item.mediaType == MediaType.VIDEO) {
-            Text("▶", modifier = Modifier.align(Alignment.TopEnd).padding(7.dp), fontSize = 13.sp, color = Color.White)
+        if (video) {
+            Text("▶", modifier = Modifier.align(Alignment.TopEnd).padding(6.dp),
+                color = Color.White, fontSize = 12.sp)
         }
     }
 }
 
 @Composable
-private fun rememberMediaBitmap(contentUri: String, maxSize: Int): ImageBitmap? {
+private fun mediaBitmap(uri: String?, size: Int): ImageBitmap? {
     val resolver = LocalContext.current.contentResolver
-    val bitmap by produceState<ImageBitmap?>(initialValue = null, contentUri, maxSize) {
+    val result by produceState<ImageBitmap?>(null, uri) {
         value = withContext(Dispatchers.IO) {
-            runCatching {
-                resolver.loadThumbnail(Uri.parse(contentUri), Size(maxSize, maxSize), null).asImageBitmap()
+            if (uri == null) null
+            else runCatching {
+                if (uri.startsWith("file://"))
+                    BitmapFactory.decodeFile(uri.removePrefix("file://"))?.asImageBitmap()
+                else resolver.loadThumbnail(Uri.parse(uri), Size(size, size), null).asImageBitmap()
             }.getOrNull()
         }
     }
-    return bitmap
+    return result
 }
 
 @Composable
-private fun GalleryViewer(
-    item: MediaItem,
-    onDismiss: () -> Unit,
-    onOpenVideo: () -> Unit,
-) {
-    val bitmap = rememberMediaBitmap(item.contentUri, 1600)
-    Dialog(onDismissRequest = onDismiss) {
-        Surface(
-            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.82f),
-            shape = RoundedCornerShape(15.dp),
-            color = Color(0xFF151517),
-        ) {
+private fun MediaViewer(uri: String, name: String, subhead: String,
+    onClose: () -> Unit, isVideo: Boolean, onOpenVideo: () -> Unit) {
+    val image = mediaBitmap(uri, 1600)
+    Dialog(onDismissRequest = onClose) {
+        Surface(color = Color(0xFF151517), shape = RoundedCornerShape(17.dp),
+            modifier = Modifier.fillMaxWidth()) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    TextButton(onClick = onDismiss) { Text("关闭", color = Color.White) }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = onClose) { Text("关闭", color = Color.White) }
                     Spacer(Modifier.weight(1f))
-                    Text("本机", color = Color.White, fontSize = 12.sp)
+                    Text(subhead, color = Color.White, fontSize = 11.sp,
+                        modifier = Modifier.padding(end = 16.dp))
                 }
-                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    if (bitmap != null) Image(bitmap = bitmap, contentDescription = item.displayName,
+                Box(Modifier.fillMaxWidth().aspectRatio(0.82f),
+                    contentAlignment = Alignment.Center) {
+                    if (image != null) Image(image, contentDescription = name,
                         modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
-                    else Text("无法读取预览", color = Color.White)
+                    else Text("无法预览当前原件", color = Color.White)
                 }
-                Text(item.displayName ?: "照片", color = Color.White, fontSize = 13.sp,
-                    modifier = Modifier.padding(top = 6.dp))
-                Text("原件尚未同步 · 未连接 Signal Server", color = Color(0xFFCBCBD0),
-                    fontSize = 11.sp, modifier = Modifier.padding(bottom = 12.dp))
-                if (item.mediaType == MediaType.VIDEO) {
-                    TextButton(onClick = onOpenVideo) { Text("用系统播放器打开", color = Color.White) }
-                }
+                Text(name, Modifier.padding(12.dp), color = Color.White, fontSize = 12.sp)
+                if (isVideo) TextButton(onClick = onOpenVideo) { Text("使用系统播放器打开") }
             }
         }
-    }
-}
-
-@Composable
-private fun CloudGlyph(color: Color, modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier) {
-        val w = size.width
-        val h = size.height
-        val cloud = Path().apply {
-            moveTo(w * .24f, h * .79f)
-            cubicTo(w * .07f, h * .79f, w * .02f, h * .68f, w * .07f, h * .55f)
-            cubicTo(w * .10f, h * .41f, w * .21f, h * .36f, w * .34f, h * .39f)
-            cubicTo(w * .39f, h * .18f, w * .55f, h * .13f, w * .68f, h * .21f)
-            cubicTo(w * .80f, h * .27f, w * .83f, h * .37f, w * .84f, h * .45f)
-            cubicTo(w * 1.00f, h * .47f, w * 1.00f, h * .66f, w * .93f, h * .73f)
-            cubicTo(w * .87f, h * .79f, w * .84f, h * .79f, w * .77f, h * .79f)
-            close()
-        }
-        drawPath(cloud, color)
     }
 }
