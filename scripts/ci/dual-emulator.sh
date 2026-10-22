@@ -6,11 +6,13 @@ timeout 12m gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace
 srv=""
 profile=runner-loopback
 phase_timeout=180s
+fault_attempts=120
 if [[ "${SIGNAL_ISOLATED_TARGET:-false}" == true ]]; then
   [[ "${SIGNAL_TEST_ENDPOINT:-}" == https://* ]] || { echo 'FAIL: isolated target requires HTTPS'; exit 1; }
   [[ "${#SIGNAL_TEST_ENROLLMENT}" -ge 16 ]] || { echo 'FAIL: missing isolated enrollment credential'; exit 1; }
   profile=isolated-target-https
   phase_timeout=900s
+  fault_attempts=1200
 else
   export SIGNAL_TEST_ENDPOINT=http://127.0.0.1:8765
   export SIGNAL_TEST_ENROLLMENT=synthetic-test-enrollment-secret
@@ -49,7 +51,7 @@ done
 adb devices -l > dual-evidence/devices.txt
 [[ $(adb devices | grep -c '^emulator-.*device$') -eq 2 ]]
 for attempt in $(seq 1 120); do
-  curl -fsS "$SIGNAL_TEST_ENDPOINT/health" > dual-evidence/health.json 2>/dev/null && break
+  curl --connect-timeout 5 --max-time 15 -fsS "$SIGNAL_TEST_ENDPOINT/health" > dual-evidence/health.json 2>/dev/null && break
   sleep 2
 done
 python3 -c 'import json; assert json.load(open("dual-evidence/health.json"))["ai_vision"] is True'
@@ -102,7 +104,7 @@ interrupt_transfer() {
   adb -s "$serial" shell wm dismiss-keyguard
   timeout "$phase_timeout" adb -s "$serial" shell am instrument -w -r -e class com.wb.signalpro.photos.DualEmulatorInstrumentedTest -e role "$role" -e phase "$task" -e endpoint "$SIGNAL_TEST_ENDPOINT" -e enrollment "$SIGNAL_TEST_ENROLLMENT" com.wb.signalpro.test/androidx.test.runner.AndroidJUnitRunner > "dual-evidence/$role-$task.txt" 2>&1 &
   local process=$! progress=0
-  for attempt in $(seq 1 120); do
+  for attempt in $(seq 1 "$fault_attempts"); do
     progress=$(adb -s "$serial" shell run-as com.wb.signalpro cat "files/dual-$task.progress" 2>/dev/null | tr -d '\r' || true)
     [[ "$progress" =~ ^[0-9]+$ ]] && [[ "$progress" -ge 1048576 ]] && break
     sleep 0.5
