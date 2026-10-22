@@ -94,7 +94,7 @@ jobs:
           target: google_apis
           profile: pixel_6
           disable-animations: true
-          script: bash -lc 'set -e -o pipefail; export SIGNAL_ENROLL_TOKEN=synthetic-test-enrollment-secret; export SIGNAL_DATA_DIR=$RUNNER_TEMP/signal-test-media; export SIGNAL_BIND=127.0.0.1; python3 server/signal_server.py > signal-server.log 2>&1 & srv=$!; adb reverse tcp:8765 tcp:8765; gradle :app:connectedDebugAndroidTest --stacktrace 2>&1 | tee gradle-instrumentation.log; exitcode=${PIPESTATUS[0]}; adb pull /sdcard/Pictures/signal-gallery-emulator.png gallery-screenshot.png || true; kill $srv || true; exit $exitcode'
+          script: bash -lc 'set -e -o pipefail; export SIGNAL_ENROLL_TOKEN=synthetic-test-enrollment-secret; export SIGNAL_DATA_DIR=$RUNNER_TEMP/signal-test-media; export SIGNAL_BIND=127.0.0.1; python3 server/signal_server.py > signal-server.log 2>&1 & srv=$!; trap "kill $srv 2>/dev/null || true" EXIT; adb reverse tcp:8765 tcp:8765; gradle :app:connectedDebugAndroidTest --stacktrace 2>&1 | tee gradle-instrumentation.log; adb pull /sdcard/Pictures/signal-gallery-emulator.png gallery-screenshot.png || true'
 
       - name: Upload MediaStore POC evidence
         if: always()
