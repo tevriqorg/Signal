@@ -139,7 +139,7 @@ internal class SignalMediaClient(private val context: Context) {
             mapOf("X-SHA256" to sha(bytes)))
     }
 
-    fun uploadOriginal(item: MediaItem, mediaId: String, shouldContinue: () -> Boolean, progress: (Long, Long) -> Unit) {
+    fun uploadOriginal(item: MediaItem, mediaId: String, shouldContinue: () -> Boolean, progress: (Long, Long) -> Unit): Boolean {
         val credential = pair()
         val uri = Uri.parse(item.contentUri)
         val digest = MessageDigest.getInstance("SHA-256")
@@ -147,7 +147,7 @@ internal class SignalMediaClient(private val context: Context) {
         context.contentResolver.openInputStream(uri)?.use { input ->
             val block = ByteArray(128 * 1024)
             while (true) {
-                if (!shouldContinue()) return
+                if (!shouldContinue()) return false
                 val count = input.read(block)
                 if (count == -1) break
                 digest.update(block, 0, count)
@@ -159,22 +159,26 @@ internal class SignalMediaClient(private val context: Context) {
         val payload = JSONObject().put("media_id", mediaId).put("size", length).put("sha256", hash)
         val session = JSONObject(String(request(credential.serverUrl, "POST", "/v1/uploads",
             payload.toString().toByteArray(), credential.deviceToken)))
-        if (session.optBoolean("complete")) { progress(length, length); return }
+        if (session.optBoolean("complete")) { progress(length, length); return true }
         val uploadId = session.getString("upload_id")
         var offset = session.getLong("offset")
         context.contentResolver.openInputStream(uri)?.use { input ->
             skipExactly(input, offset)
             val block = ByteArray(256 * 1024)
             while (offset < length) {
-                if (!shouldContinue()) return
+                if (!shouldContinue()) return false
                 val read = input.read(block, 0, minOf(block.size.toLong(), length - offset).toInt())
                 if (read < 1) throw IllegalStateException("原件在上传期间发生变化")
                 val response = JSONObject(String(request(credential.serverUrl, "PUT", "/v1/uploads/$uploadId",
                     block.copyOf(read), credential.deviceToken, mapOf("X-Offset" to offset.toString()))))
-                offset = response.getLong("offset")
+                val next = response.getLong("offset")
+                check(next == offset + read && next <= length) { "服务器上传进度无效" }
+                offset = next
+                if (offset == length) check(response.optBoolean("complete")) { "服务器尚未确认原件" }
                 progress(offset, length)
             }
         } ?: throw IllegalStateException("原件不可读取")
+        return true
     }
 
     fun preview(mediaId: String): File? =
@@ -190,6 +194,7 @@ internal class SignalMediaClient(private val context: Context) {
             null, credential.deviceToken)
         require(bytes.size in 1..(3 * 1024 * 1024)) { "缩略图大小无效" }
         val folder = File(context.filesDir, "gallery-previews").apply { mkdirs() }
+        reserveCache(folder, bytes.size.toLong(), 128L * 1024 * 1024, media.id)
         val temporary = File.createTempFile("pending", ".jpg", folder)
         try {
             temporary.writeBytes(bytes)
@@ -207,6 +212,7 @@ internal class SignalMediaClient(private val context: Context) {
         }
         val credential = pair()
         val folder = File(context.filesDir, "gallery-originals").apply { mkdirs() }
+        reserveCache(folder, media.size ?: 0, 2L * 1024 * 1024 * 1024, media.id)
         // Stable partial path survives process death. SHA binds it to the exact revision.
         val tmp = File(folder, media.id + "." + media.sha256 + ".part")
         if (media.size != null && tmp.length() > media.size) tmp.delete()
@@ -251,6 +257,20 @@ internal class SignalMediaClient(private val context: Context) {
             File(folder, media.id + ".sha256").writeText(media.sha256!!)
             return target
         } finally { connection.disconnect() }
+    }
+
+    private fun reserveCache(folder: File, required: Long, limit: Long, protectedId: String) {
+        require(required <= limit) { "原件超过当前缓存容量，请先释放空间或使用其他设备取用" }
+        val entries = folder.listFiles()?.filter { it.isFile } ?: emptyList()
+        var used = entries.sumOf { it.length() }
+        for (entry in entries.sortedBy { it.lastModified() }) {
+            if (used + required <= limit) break
+            if (entry.name.startsWith(protectedId) || entry.name.endsWith(".part")) continue
+            val size = entry.length()
+            if (entry.delete()) used -= size
+        }
+        check(used + required <= limit || entries.any { it.name.startsWith(protectedId) }) { "缓存空间不足，请稍后重试" }
+        check(folder.usableSpace >= required + 16L * 1024 * 1024) { "设备存储空间不足" }
     }
 
     private fun request(url: String, method: String, path: String, data: ByteArray?, token: String?,

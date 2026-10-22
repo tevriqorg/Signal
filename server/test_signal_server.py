@@ -189,6 +189,20 @@ class SignalServerIntegrationTest(unittest.TestCase):
         code, _ = self.call("GET", "/v1/media", token=self.device_b)
         self.assertEqual(401, code)
 
+    def test_cross_device_same_original_reuses_verified_blob_without_upload(self):
+        a = self.make_photo()
+        payload = b"synthetic-dedup-original"
+        sha = hashlib.sha256(payload).hexdigest()
+        _, session = self.call("POST", "/v1/uploads", {"media_id": a, "size": len(payload), "sha256": sha}, token=self.device_a)
+        self.call("PUT", "/v1/uploads/" + session["upload_id"], payload, token=self.device_a, headers={"X-Offset": "0"})
+        b = self.make_photo(owner="b", key="copy")
+        code, reused = self.call("POST", "/v1/uploads", {"media_id": b, "size": len(payload), "sha256": sha}, token=self.device_b)
+        self.assertEqual(200, code)
+        self.assertTrue(reused["complete"])
+        self.assertIsNone(reused["upload_id"])
+        self.assertTrue(self.service.item(b)["original_ready"])
+        self.assertEqual(1, len(list((Path(self.temp.name) / "objects").iterdir())))
+
     def test_bad_hash_rolls_back_and_owner_only_upload(self):
         photo = self.make_photo()
         code, upload = self.call("POST", "/v1/uploads", {"media_id": photo, "size": 5, "sha256": "a"*64}, token=self.device_a)

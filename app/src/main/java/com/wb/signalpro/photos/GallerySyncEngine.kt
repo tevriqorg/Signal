@@ -108,12 +108,12 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                     if (!store.thumbnailReady(confirmedId)) client.uploadThumbnail(media, confirmedId)
                     val allowed = media.mediaType != MediaType.VIDEO || (foreground && fastWifi())
                     if (!allowed) continue
-                    client.uploadOriginal(media, confirmedId,
+                    val uploaded = client.uploadOriginal(media, confirmedId,
                         shouldContinue = { !cancelled && (foreground || (allowBackgroundImages && media.mediaType != MediaType.VIDEO)) },
                         progress = { done, total ->
                             onUpdate(snapshot(true, "正在传输原件", done, total, media.displayName ?: "照片"))
                         })
-                    if (!cancelled && (foreground || (allowBackgroundImages && media.mediaType != MediaType.VIDEO))) {
+                    if (uploaded && !cancelled && (foreground || (allowBackgroundImages && media.mediaType != MediaType.VIDEO))) {
                         store.saveLocal(media.id.value, confirmedId, verified = true)
                         onUpdate(snapshot(true, "原件已通过服务端校验"))
                     }

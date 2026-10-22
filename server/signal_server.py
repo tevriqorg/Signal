@@ -274,6 +274,12 @@ class MediaService:
         with self.lock, self.db() as db:
             if row["original_ready"] and row["original_sha"] == sha and row["size"] == size:
                 return {"upload_id": None, "offset": size, "complete": True}
+            reusable = self.root / "objects" / sha
+            if reusable.is_file() and reusable.stat().st_size == size and file_sha(reusable) == sha:
+                db.execute("UPDATE assets SET original_ready=1,original_sha=?,size=? WHERE id=?", (sha, size, media_id))
+                db.execute("INSERT INTO changes(asset_id) VALUES (?)", (media_id,))
+                db.commit()
+                return {"upload_id": None, "offset": size, "complete": True}
             existing = db.execute("""SELECT * FROM uploads
                  WHERE asset_id=? AND device_id=? AND sha=? AND size=? AND done=0
                  ORDER BY rowid DESC LIMIT 1""", (media_id, device["id"], sha, size)).fetchone()

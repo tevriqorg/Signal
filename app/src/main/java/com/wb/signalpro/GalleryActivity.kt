@@ -111,6 +111,13 @@ class GalleryActivity : ComponentActivity() {
         window.decorView.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or
             android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
         ui = ui.copy(sync = sync.snapshot(false, "尚未连接"))
+        scope.launch {
+            val access = MediaPermissionPolicy.current(this@GalleryActivity)
+            if (access != MediaAccessLevel.DENIED) {
+                val cached = coordinator.indexedMedia()
+                if (ui.items.isEmpty()) ui = ui.copy(access = access, items = cached)
+            }
+        }
         setContent {
             MaterialTheme(colorScheme = lightColorScheme(
                 primary = Color(0xFF212126), onPrimary = Color.White,
