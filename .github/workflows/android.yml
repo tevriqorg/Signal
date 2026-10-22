@@ -49,7 +49,7 @@ jobs:
           name: g1-build-log-${{ github.sha }}
           path: gradle-build.log
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 90
 
       - name: Upload unsigned APK for private signing
         uses: actions/upload-artifact@v4
@@ -57,7 +57,7 @@ jobs:
           name: Signal-unsigned-${{ github.sha }}
           path: app/build/outputs/apk/release/app-release-unsigned.apk
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 90
 
   media-poc:
     name: Android 35 MediaStore POC
@@ -109,7 +109,7 @@ jobs:
             app/build/outputs/androidTest-results/connected/**
             app/build/reports/androidTests/connected/**
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 90
 
   dual-emulator:
     name: Two Android emulators A-B-A
@@ -149,4 +149,4 @@ jobs:
         with:
           name: dual-emulator-${{ github.sha }}
           path: dual-evidence/
-          retention-days: 14
+          retention-days: 90

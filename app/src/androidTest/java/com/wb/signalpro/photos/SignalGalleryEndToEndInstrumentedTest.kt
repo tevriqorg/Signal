@@ -89,6 +89,7 @@ class SignalGalleryEndToEndInstrumentedTest {
         val activity = instrumentation.startActivitySync(Intent(app, GalleryActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         try {
+            device.waitForIdle()
             assertTrue(device.wait(Until.hasObject(By.text("照片")), 15_000))
             assertNotNull(device.findObject(By.text("视频")))
             assertNotNull(device.findObject(By.text("截图")))
@@ -102,7 +103,12 @@ class SignalGalleryEndToEndInstrumentedTest {
             device.takeScreenshot(java.io.File(app.getExternalFilesDir(null), "signal-gallery-emulator.png"))
         } finally {
             device.takeScreenshot(java.io.File(app.getExternalFilesDir(null), "signal-gallery-emulator.png"))
-            device.dumpWindowHierarchy(java.io.File(app.getExternalFilesDir(null), "gallery-window.xml"))
+            val hierarchy = java.io.File(app.getExternalFilesDir(null), "gallery-window.xml")
+            device.dumpWindowHierarchy(hierarchy)
+            // UTP uninstalls the target after connected tests. Shell-owned evidence survives
+            // without creating a MediaStore row or feeding screenshots back into the gallery.
+            device.executeShellCommand("screencap -p /data/local/tmp/signal-gallery-emulator.png")
+            device.executeShellCommand("cp ${hierarchy.absolutePath} /data/local/tmp/gallery-window.xml")
             activity.finish()
         }
     }

@@ -14,7 +14,7 @@ adb shell wm dismiss-keyguard
 set +e
 gradle :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.notClass=com.wb.signalpro.photos.DualEmulatorInstrumentedTest --stacktrace 2>&1 | tee gradle-instrumentation.log
 status=${PIPESTATUS[0]}
-adb pull /sdcard/Android/data/com.wb.signalpro/files/signal-gallery-emulator.png gallery-screenshot.png || true
-adb pull /sdcard/Android/data/com.wb.signalpro/files/gallery-window.xml gallery-window.xml || true
+adb pull /data/local/tmp/signal-gallery-emulator.png gallery-screenshot.png || true
+adb pull /data/local/tmp/gallery-window.xml gallery-window.xml || true
 adb logcat -d > gallery-logcat.txt
 exit "$status"

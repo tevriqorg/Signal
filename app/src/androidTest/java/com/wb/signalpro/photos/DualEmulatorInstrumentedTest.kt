@@ -330,6 +330,13 @@ class DualEmulatorInstrumentedTest {
                 assertTrue(Color.green(coverColor) > Color.red(coverColor))
                 cover.recycle()
                 assertEquals(1, all(client).count { it.fileName == "dual-A.jpg" })
+                val activity = instrumentation.startActivitySync(Intent(context, GalleryActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                try {
+                    val device = UiDevice.getInstance(instrumentation)
+                    assertTrue(device.wait(Until.hasObject(By.desc("dual-A.jpg")), 15000))
+                    assertTrue(device.hasObject(By.textContains("Emulator-A")))
+                    assertTrue(device.takeScreenshot(File(context.getExternalFilesDir(null), "dual-edited-B.png")))
+                } finally { activity.finish() }
             }
             "archive-local" -> {
                 val client = client()
@@ -350,6 +357,13 @@ class DualEmulatorInstrumentedTest {
                     assertTrue(all(client).first { it.id == media.id }.originalReady)
                     val original = client.fetchOriginal(media) { _, _ -> }
                     assertEquals(media.sha256, sha(original.readBytes()))
+                    val activity = instrumentation.startActivitySync(Intent(context, GalleryActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    try {
+                        val device = UiDevice.getInstance(instrumentation)
+                        assertTrue(device.wait(Until.hasObject(By.desc(media.fileName)), 15000))
+                        assertTrue(device.wait(Until.hasObject(By.textContains("Emulator-$role")), 15000))
+                        assertTrue(device.takeScreenshot(File(context.getExternalFilesDir(null), "dual-archive-$role.png")))
+                    } finally { activity.finish() }
                 } finally { coordinator.close() }
             }
             "permission-full", "permission-partial", "permission-denied" -> {

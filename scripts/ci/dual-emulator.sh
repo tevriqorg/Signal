@@ -151,6 +151,8 @@ phase A edit-offline
 adb -s emulator-5554 reverse tcp:8765 tcp:8765
 phase A recover-edited
 phase B receive-edited
+adb -s emulator-5556 pull /sdcard/Android/data/com.wb.signalpro/files/dual-edited-B.png dual-evidence/edited-B.png
 
 # User-only local cleanup must leave the central original browsable on its origin device.
 phase A archive-local
+adb -s emulator-5554 pull /sdcard/Android/data/com.wb.signalpro/files/dual-archive-A.png dual-evidence/archive-A.png
