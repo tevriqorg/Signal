@@ -47,7 +47,9 @@ class DualEmulatorInstrumentedTest {
     }
     private suspend fun actualMedia(uri: String): MediaItem = MediaIndexCoordinator(context).use { coordinator ->
         coordinator.reconcile(forceFull = true)
-        coordinator.indexedMedia().first { it.contentUri == uri }
+        coordinator.indexedMedia().first {
+            it.mediaStoreId == android.content.ContentUris.parseId(android.net.Uri.parse(uri))
+        }
     }
     @Test fun phase(): Unit = runBlocking {
         val phase = args.getString("phase") ?: error("phase required")
