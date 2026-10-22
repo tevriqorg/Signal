@@ -202,7 +202,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                         store.ingest(result.items, result.cursor)
                         if (result.items.size < 200 || result.cursor == start) break
                     }
-                }.onFailure { failed = true }
+                }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it; failed = failed || !isTransient(it) }
                 runCatching { refreshAnalysisStatus() }
                 val unresolved = failed || store.localSnapshot().values.any { it.failed } || remoteFailures().isNotEmpty() || analysisFailures > 0 || storageFailures > 0
                 update(!unresolved, if (unresolved) "有项目需要重试" else "同步系统正常", force = true)
@@ -210,7 +210,9 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
             } finally { endTransfer() }
         } }
 
-    private fun isTransient(error: Exception): Boolean = error is java.io.IOException ||
+    private fun isTransient(error: Throwable): Boolean =
+        error is java.net.SocketException || error is java.net.UnknownHostException ||
+        error is java.io.InterruptedIOException || error is java.io.EOFException ||
         (error is SignalHttpError && (error.status == 408 || error.status == 429 || error.status >= 500 && error.status != 507))
 
     suspend fun pair(url: String, key: String, name: String): GallerySyncSnapshot = withContext(Dispatchers.IO) {
@@ -233,7 +235,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
     suspend fun loadOriginal(media: RemotePhoto, progress: (Long, Long) -> Unit) =
         withContext(Dispatchers.IO) { downloadMutex.withLock {
             try { client.fetchOriginal(media, progress).also { remoteFailure(media.id, false); cacheGeneration++ } }
-            catch (error: Exception) { remoteFailure(media.id, true); throw error }
+            catch (error: Exception) { if (!isTransient(error) && error !is kotlinx.coroutines.CancellationException) remoteFailure(media.id, true); throw error }
         } }
 
     suspend fun clearOriginalCache() = withContext(Dispatchers.IO) { downloadMutex.withLock {
@@ -261,7 +263,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
     fun cachedOriginal(media: RemotePhoto) = client.original(media.id)
     suspend fun loadPreview(media: RemotePhoto) = withContext(Dispatchers.IO) {
         try { client.fetchPreview(media).also { remoteFailure(media.id, false, "preview") } }
-        catch (error: Exception) { if (media.thumbReady) remoteFailure(media.id, true, "preview"); throw error }
+        catch (error: Exception) { if (media.thumbReady && !isTransient(error) && error !is kotlinx.coroutines.CancellationException) remoteFailure(media.id, true, "preview"); throw error }
     }
 
     override fun close() = synchronized(lifecycleLock) {

@@ -31,7 +31,7 @@ class DualEmulatorInstrumentedTest {
     private val args get() = InstrumentationRegistry.getArguments()
     private val role get() = args.getString("role") ?: error("role required")
     private fun client() = SignalMediaClient(context).also {
-        if (!it.paired) it.enroll("http://127.0.0.1:8765", "synthetic-test-enrollment-secret", "Emulator-$role")
+        if (!it.paired) it.enroll(args.getString("endpoint") ?: "http://127.0.0.1:8765", args.getString("enrollment") ?: "synthetic-test-enrollment-secret", "Emulator-$role")
     }
     private fun sha(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
     private fun all(client: SignalMediaClient): List<RemotePhoto> {
@@ -174,6 +174,18 @@ class DualEmulatorInstrumentedTest {
                 assertTrue(client.paired)
                 assertTrue(GallerySyncStore(context).use { it.remote(client.deviceId).isNotEmpty() })
                 assertTrue(runCatching { client.catalog(0) }.isFailure)
+                val media = GallerySyncStore(context).use { it.remote(client.deviceId).first { photo -> photo.fileName.startsWith("dual-") && !photo.isVideo } }
+                GallerySyncEngine(context).use { engine ->
+                    engine.clearOriginalCache()
+                    client.preview(media.id).delete()
+                    assertTrue(runCatching { engine.loadOriginal(media) { _, _ -> } }.isFailure)
+                    assertTrue(runCatching { engine.loadPreview(media) }.isFailure)
+                    var state = engine.snapshot(true, "")
+                    assertFalse("temporary offline download must remain waiting, never red", state.remoteFailures.contains(media.id))
+                    engine.foreground = true
+                    engine.synchronize(emptyList()) { state = it }
+                    assertTrue("temporary catalog disconnect is not a system fault", state.healthy)
+                }
             }
             "publish-video" -> {
                 val input = File("/sdcard/Download/signal-large.mp4")
