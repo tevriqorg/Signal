@@ -401,18 +401,28 @@ private fun GalleryScreen(
                                 onFailed = { remoteFailed = remoteFailed + media.id })
                         }
                     } else {
-                        items(tiles, key = { it.key }) { tile ->
-                            when (tile) {
-                                is Tile.Local -> GalleryCell(tile.item,
-                                    localBadge(tile.item, state.sync.local[tile.item.id.value])) {
-                                        localSelected = tile.item
+                        // Plain native-style calendar timeline (no semantic header cards).
+                        tiles.groupBy { tile ->
+                            if (tile.time <= 0L) "日期未知"
+                            else android.text.format.DateFormat.format("yyyy年M月d日", java.util.Date(tile.time)).toString()
+                        }.forEach { (day, section) ->
+                            item(key = "day:" + day, span = { GridItemSpan(3) }) {
+                                Text(day, Modifier.padding(start = 14.dp, top = 15.dp, bottom = 7.dp),
+                                    color = Color(0xFF4C4C52), fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                            }
+                            items(section, key = { it.key }) { tile ->
+                                when (tile) {
+                                    is Tile.Local -> GalleryCell(tile.item,
+                                        localBadge(tile.item, state.sync.local[tile.item.id.value])) {
+                                            localSelected = tile.item
+                                        }
+                                    is Tile.Remote -> {
+                                        val media = tile.item
+                                        RemoteCell(media, remoteBadge(media, state.sync, remoteFailed),
+                                            onRemotePreview,
+                                            onClick = { remoteSelected = media; onLoadRemote(media) },
+                                            onFailed = { remoteFailed = remoteFailed + media.id })
                                     }
-                                is Tile.Remote -> {
-                                    val media = tile.item
-                                    RemoteCell(media, remoteBadge(media, state.sync, remoteFailed),
-                                        onRemotePreview,
-                                        onClick = { remoteSelected = media; onLoadRemote(media) },
-                                        onFailed = { remoteFailed = remoteFailed + media.id })
                                 }
                             }
                         }
