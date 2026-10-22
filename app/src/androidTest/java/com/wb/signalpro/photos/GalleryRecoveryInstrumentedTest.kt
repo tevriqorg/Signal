@@ -69,6 +69,27 @@ class GalleryRecoveryInstrumentedTest {
         Unit
     }
 
+    @Test fun explicitLargeOriginalUsesSoftBudgetButPreservesDiskSafetyAndPartials() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val folder = java.io.File(context.cacheDir, "large-cache-policy-test").apply { mkdirs() }
+        try {
+            val old = java.io.File(folder, "old-original").apply { writeBytes(ByteArray(4096)) }
+            val partial = java.io.File(folder, "other-revision.part").apply { writeBytes(ByteArray(1024)) }
+            val required = 3L * 1024 * 1024 * 1024
+            val client = SignalMediaClient(context)
+            client.reserveCache(folder, required, 2L * 1024 * 1024 * 1024, "requested", 4L * 1024 * 1024 * 1024)
+            assertFalse("large explicit request evicts retained originals", old.exists())
+            assertTrue("resume bytes are retained", partial.isFile)
+            assertTrue(runCatching { client.reserveCache(folder, required, 2L * 1024 * 1024 * 1024, "requested", 1024) }.isFailure)
+            val obsolete = java.io.File(folder, "requested.old.part")
+            java.io.RandomAccessFile(obsolete, "rw").use { it.setLength(32L * 1024 * 1024) }
+            assertTrue("old revision partial cannot count as reusable new-version bytes", runCatching {
+                client.reserveCache(folder, 64L * 1024 * 1024, 128L * 1024 * 1024, "requested",
+                    48L * 1024 * 1024, reusableFileName = "requested.new.part")
+            }.isFailure)
+        } finally { folder.deleteRecursively() }
+    }
+
     @Test fun staleCatalogReplayCannotRollbackRevisionOrCursor() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val name = "signal-gallery-replay-test.db"

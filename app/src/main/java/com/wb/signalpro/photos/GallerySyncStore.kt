@@ -20,11 +20,13 @@ internal data class RemotePhoto(
     val revision: Long,
     val deleted: Boolean = false,
     val matchReasons: String = "",
+    val centerUrl: String = "",
 ) {
     val isVideo: Boolean get() = kind == "video"
     companion object {
         fun parse(j: JSONObject) = RemotePhoto(
             id = j.getString("media_id"),
+            centerUrl = j.optString("_center_url", ""),
             deviceId = j.getString("origin_device_id"),
             deviceName = j.optString("device_name", "未知设备"),
             kind = j.optString("media_type", "photo"),
@@ -64,6 +66,16 @@ internal class GallerySyncStore(context: Context, databaseName: String = "signal
             db.execSQL("UPDATE local_sync SET verified=0")
         }
     }
+    /** Clear derived protocol state only. Phone and center originals are untouched. */
+    fun resetCenter() {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            for (table in listOf("local_sync", "remote_catalog", "source_versions", "progress")) db.delete(table, null, null)
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
     fun thumbnailReady(mediaId: String): Boolean = readableDatabase.rawQuery(
         "SELECT json FROM remote_catalog WHERE media_id=?", arrayOf(mediaId)).use {
         it.moveToFirst() && JSONObject(it.getString(0)).optBoolean("thumbnail_ready")
@@ -131,7 +143,7 @@ internal class GallerySyncStore(context: Context, databaseName: String = "signal
 }
 
 private fun RemotePhoto.toJson() = JSONObject().apply {
-    put("media_id", id)
+    put("media_id", id).put("_center_url", centerUrl)
     put("origin_device_id", deviceId)
     put("device_name", deviceName)
     put("media_type", kind)

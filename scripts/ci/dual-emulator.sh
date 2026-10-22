@@ -3,14 +3,27 @@ set -euo pipefail
 mkdir -p dual-evidence
 # Build only on GitHub's hosted runner, before booting the second emulator.
 timeout 12m gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace > dual-evidence/build.log 2>&1
-export SIGNAL_ENROLL_TOKEN=synthetic-test-enrollment-secret
-export SIGNAL_DATA_DIR="$RUNNER_TEMP/signal-dual-data"
-export SIGNAL_BIND=127.0.0.1
-export SIGNAL_AI_ENABLED=1
-export SIGNAL_AI_INT8=1
-python3 server/signal_server.py > dual-evidence/server.log 2>&1 &
-srv=$!
-trap 'kill "$srv" 2>/dev/null || true; adb -s emulator-5556 emu kill >/dev/null 2>&1 || true' EXIT
+srv=""
+profile=runner-loopback
+phase_timeout=180s
+if [[ "${SIGNAL_ISOLATED_TARGET:-false}" == true ]]; then
+  [[ "${SIGNAL_TEST_ENDPOINT:-}" == https://* ]] || { echo 'FAIL: isolated target requires HTTPS'; exit 1; }
+  [[ "${#SIGNAL_TEST_ENROLLMENT}" -ge 16 ]] || { echo 'FAIL: missing isolated enrollment credential'; exit 1; }
+  profile=isolated-target-https
+  phase_timeout=900s
+else
+  export SIGNAL_TEST_ENDPOINT=http://127.0.0.1:8765
+  export SIGNAL_TEST_ENROLLMENT=synthetic-test-enrollment-secret
+  export SIGNAL_ENROLL_TOKEN="$SIGNAL_TEST_ENROLLMENT"
+  export SIGNAL_DATA_DIR="$RUNNER_TEMP/signal-dual-data"
+  export SIGNAL_BIND=127.0.0.1
+  export SIGNAL_AI_ENABLED=1
+  export SIGNAL_AI_INT8=1
+  python3 server/signal_server.py > dual-evidence/server.log 2>&1 &
+  srv=$!
+fi
+printf '{"server_profile":"%s","tls_verification":"platform defaults; no bypass","fixture_run":"%s"}\n' "$profile" "${GITHUB_RUN_ID:-local}" > dual-evidence/profile.json
+trap '[[ -z "$srv" ]] || kill "$srv" 2>/dev/null || true; adb -s emulator-5556 emu kill >/dev/null 2>&1 || true' EXIT
 # Reuse the installed system image, create a distinct AVD with its own writable userdata.
 avdmanager create avd --force --name signal-peer --package 'system-images;android-35;google_apis;x86_64' --device pixel_6 <<< no
 "$ANDROID_HOME/emulator/emulator" -avd signal-peer -port 5556 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -memory 1536 > dual-evidence/emulator-B.log 2>&1 &
@@ -36,10 +49,38 @@ done
 adb devices -l > dual-evidence/devices.txt
 [[ $(adb devices | grep -c '^emulator-.*device$') -eq 2 ]]
 for attempt in $(seq 1 120); do
-  curl -fsS http://127.0.0.1:8765/health > dual-evidence/health.json 2>/dev/null && break
+  curl -fsS "$SIGNAL_TEST_ENDPOINT/health" > dual-evidence/health.json 2>/dev/null && break
   sleep 2
 done
 python3 -c 'import json; assert json.load(open("dual-evidence/health.json"))["ai_vision"] is True'
+# ADB remains the control channel; actual application networking is disabled on BOTH
+# profiles. Removing the reverse alone cannot interrupt a direct public HTTPS session.
+network_off() {
+  local serial="$1"
+  adb -s "$serial" reverse --remove tcp:8765
+  adb -s "$serial" shell svc data disable
+  adb -s "$serial" shell svc wifi disable
+  for attempt in $(seq 1 30); do
+    adb -s "$serial" shell dumpsys connectivity > "dual-evidence/$serial-network-off.txt"
+    grep -q 'Active default network: none' "dual-evidence/$serial-network-off.txt" && return 0
+    sleep 1
+  done
+  echo 'FAIL: application network was not disconnected'
+  return 1
+}
+network_on() {
+  local serial="$1"
+  adb -s "$serial" reverse tcp:8765 tcp:8765
+  adb -s "$serial" shell svc wifi enable
+  adb -s "$serial" shell svc data enable
+  for attempt in $(seq 1 90); do
+    adb -s "$serial" shell dumpsys connectivity > "dual-evidence/$serial-network-on.txt"
+    if python3 scripts/ci/verified-emulator-wifi.py "dual-evidence/$serial-network-on.txt"; then return 0; fi
+    sleep 1
+  done
+  echo 'FAIL: validated unmetered Wi-Fi did not recover'
+  return 1
+}
 phase_counter=0
 phase() {
   local role="$1" task="$2" serial=emulator-5554
@@ -48,7 +89,7 @@ phase() {
   [[ "$role" == B ]] && serial=emulator-5556
   adb -s "$serial" shell input keyevent KEYCODE_WAKEUP
   adb -s "$serial" shell wm dismiss-keyguard
-  timeout 180s adb -s "$serial" shell am instrument -w -r -e class com.wb.signalpro.photos.DualEmulatorInstrumentedTest -e role "$role" -e phase "$task" com.wb.signalpro.test/androidx.test.runner.AndroidJUnitRunner | tee "dual-evidence/$evidence_name.txt"
+  timeout "$phase_timeout" adb -s "$serial" shell am instrument -w -r -e class com.wb.signalpro.photos.DualEmulatorInstrumentedTest -e role "$role" -e phase "$task" -e endpoint "$SIGNAL_TEST_ENDPOINT" -e enrollment "$SIGNAL_TEST_ENROLLMENT" com.wb.signalpro.test/androidx.test.runner.AndroidJUnitRunner | tee "dual-evidence/$evidence_name.txt"
   adb -s "$serial" logcat -d > "dual-evidence/$evidence_name-logcat.txt"
   adb -s "$serial" exec-out screencap -p > "dual-evidence/$evidence_name.png"
   grep -q 'OK (1 test)' "dual-evidence/$evidence_name.txt"
@@ -59,7 +100,7 @@ interrupt_transfer() {
   [[ "$role" == B ]] && serial=emulator-5556
   adb -s "$serial" shell input keyevent KEYCODE_WAKEUP
   adb -s "$serial" shell wm dismiss-keyguard
-  timeout 180s adb -s "$serial" shell am instrument -w -r -e class com.wb.signalpro.photos.DualEmulatorInstrumentedTest -e role "$role" -e phase "$task" com.wb.signalpro.test/androidx.test.runner.AndroidJUnitRunner > "dual-evidence/$role-$task.txt" 2>&1 &
+  timeout "$phase_timeout" adb -s "$serial" shell am instrument -w -r -e class com.wb.signalpro.photos.DualEmulatorInstrumentedTest -e role "$role" -e phase "$task" -e endpoint "$SIGNAL_TEST_ENDPOINT" -e enrollment "$SIGNAL_TEST_ENROLLMENT" com.wb.signalpro.test/androidx.test.runner.AndroidJUnitRunner > "dual-evidence/$role-$task.txt" 2>&1 &
   local process=$! progress=0
   for attempt in $(seq 1 120); do
     progress=$(adb -s "$serial" shell run-as com.wb.signalpro cat "files/dual-$task.progress" 2>/dev/null | tr -d '\r' || true)
@@ -77,12 +118,12 @@ interrupt_transfer() {
     echo "FAIL: transfer already ended before interruption"
     return 1
   fi
-  printf '%s %s bytes=%s: remove active network forward then force-stop real APK\n' "$role" "$task" "$progress" | tee "dual-evidence/$role-$task-interruption.txt"
-  adb -s "$serial" reverse --remove tcp:8765
+  printf '%s %s bytes=%s: disconnect actual network then force-stop real APK\n' "$role" "$task" "$progress" | tee "dual-evidence/$role-$task-interruption.txt"
+  network_off "$serial"
   sleep 1
   adb -s "$serial" shell am force-stop com.wb.signalpro
   wait "$process" || true
-  adb -s "$serial" reverse tcp:8765 tcp:8765
+  network_on "$serial"
 }
 command -v ffmpeg >/dev/null || { sudo apt-get update -qq; sudo apt-get install -y ffmpeg; }
 timeout 180s ffmpeg -nostdin -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=640x360:rate=24' -t 36 -c:v libx264 -preset veryfast -profile:v high -level:v 4.1 -b:v 32M -minrate 32M -maxrate 32M -bufsize 32M -x264-params nal-hrd=cbr -pix_fmt yuv420p "$RUNNER_TEMP/signal-large.mp4"
@@ -101,9 +142,9 @@ phase A receive
 for role in A B; do
   serial=emulator-5554; [[ "$role" == B ]] && serial=emulator-5556
   adb -s "$serial" shell am force-stop com.wb.signalpro
-  adb -s "$serial" reverse --remove tcp:8765
+  network_off "$serial"
   phase "$role" offline
-  adb -s "$serial" reverse tcp:8765 tcp:8765
+  network_on "$serial"
   phase "$role" receive
   adb -s "$serial" pull "/sdcard/Android/data/com.wb.signalpro/files/dual-$role.png" "dual-evidence/$role.png"
   adb -s "$serial" logcat -d > "dual-evidence/$role-logcat.txt"
@@ -146,9 +187,9 @@ done
 
 # Reproduce the original audit defect on a real MediaStore row while offline,
 # then verify a changed original AND cover arrive at the second Android device.
-adb -s emulator-5554 reverse --remove tcp:8765
+network_off emulator-5554
 phase A edit-offline
-adb -s emulator-5554 reverse tcp:8765 tcp:8765
+network_on emulator-5554
 phase A recover-edited
 phase B receive-edited
 adb -s emulator-5556 pull /sdcard/Android/data/com.wb.signalpro/files/dual-edited-B.png dual-evidence/edited-B.png

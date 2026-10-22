@@ -141,7 +141,7 @@ class GalleryActivity : ComponentActivity() {
                     onRequestAccess = { requestMediaAccess() },
                     onRefresh = { refresh(forceFull = true) },
                     onSync = { scope.launch {
-                        runCatching { sync.retryFailures() }.onFailure { ui = ui.copy(sync = sync.snapshot(false, "重试失败，请检查连接或存储")) }
+                        runCatching { sync.retryFailures() }.onFailure { ui = ui.copy(sync = sync.snapshot(sync.isTransient(it), if (sync.isTransient(it)) "网络暂不可用，等待重试" else "重试失败，请检查连接或存储")) }
                         startSync(ui.items)
                     } },
                     onClearCache = { scope.launch {
@@ -248,10 +248,11 @@ class GalleryActivity : ComponentActivity() {
         syncRequested = false
         sync.interruptForRescan = false
         ui = ui.copy(syncRunning = true)
+        val sourceCenter = sync.client.address
         scope.launch {
             try {
                 sync.synchronize(items) { snapshot ->
-                    scope.launch { ui = ui.copy(sync = snapshot) }
+                    scope.launch { if (sourceCenter == sync.client.address) ui = ui.copy(sync = snapshot) }
                 }
             } finally {
                 ui = ui.copy(syncRunning = false)
@@ -268,7 +269,8 @@ class GalleryActivity : ComponentActivity() {
             ui = ui.copy(sync = ui.sync.copy(description = "正在连接服务器…"))
             runCatching { sync.pair(url, key, name) }
                 .onSuccess {
-                    ui = ui.copy(sync = it)
+                    ui = ui.copy(sync = it, searchResults = null, searchError = null,
+                        selected = null, loadingRemote = false, remoteError = null)
                     GalleryBackgroundScheduler.schedule(this@GalleryActivity)
                     if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(
                         android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -283,32 +285,41 @@ class GalleryActivity : ComponentActivity() {
     }
 
     private fun search(query: String) {
+        val sourceCenter = sync.client.address
         scope.launch {
             if (query.isBlank()) {
                 ui = ui.copy(searchResults = null)
             } else {
                 runCatching { sync.search(query) }
-                    .onSuccess { ui = ui.copy(searchResults = it, searchError = null) }
-                    .onFailure { ui = ui.copy(searchResults = emptyList(), searchError = it.message) }
+                    .onSuccess { if (sourceCenter == sync.client.address) ui = ui.copy(searchResults = it, searchError = null) }
+                    .onFailure { if (sourceCenter == sync.client.address) ui = ui.copy(searchResults = emptyList(), searchError = it.message) }
             }
         }
     }
 
     private fun loadOriginal(media: RemotePhoto) {
+        val sourceCenter = sync.client.address
         ui = ui.copy(selected = Selected.Remote(media), loadingRemote = true, remoteError = null)
         scope.launch {
             runCatching {
                 sync.loadOriginal(media) { done, total ->
                     scope.launch {
+                        if (sourceCenter != sync.client.address) return@launch
                         ui = ui.copy(sync = ui.sync.copy(transferredBytes = done,
                             totalBytes = total, activeTransfer = media.fileName))
                     }
                 }
             }.onSuccess {
+                if (sourceCenter != sync.client.address) return@onSuccess
                 ui = ui.copy(loadingRemote = false, selected = Selected.Remote(media),
                     remoteError = null, sync = sync.snapshot(true, "完整原件已缓存"))
             }.onFailure {
-                ui = ui.copy(loadingRemote = false, remoteError = it.message ?: "下载失败", sync = sync.snapshot(false, "下载失败，请重试"))
+                if (sourceCenter != sync.client.address) return@onFailure
+                if (it is kotlinx.coroutines.CancellationException) throw it
+                val waiting = sync.isTransient(it)
+                ui = ui.copy(loadingRemote = false,
+                    remoteError = if (waiting) "网络暂不可用，连接恢复后可继续下载" else it.message ?: "下载失败",
+                    sync = sync.snapshot(waiting, if (waiting) "网络暂不可用，等待重试" else "下载失败，请重试"))
             }
         }
     }
@@ -376,7 +387,7 @@ private fun GalleryScreen(
     var showSearch by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     var localSelected by remember { mutableStateOf<MediaItem?>(null) }
-    var remoteSelected by remember { mutableStateOf<RemotePhoto?>(null) }
+    var remoteSelected by remember(state.sync.centerUrl) { mutableStateOf<RemotePhoto?>(null) }
 
     val remote = state.searchResults ?: state.sync.remote
     val tiles = remember(state.items, if (state.searchResults != null) state.sync.local else null, remote, state.searchResults, filter) {

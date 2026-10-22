@@ -117,7 +117,10 @@ class DualEmulatorInstrumentedTest {
                 }
                 GallerySyncEngine(context).use { engine ->
                     assertTrue(engine.snapshot(true, "").remoteFailures.contains(media.id))
-                    engine.loadPreview(media)
+                    val preview = engine.loadPreview(media)
+                    val previewSha = sha(preview.readBytes())
+                    java.io.RandomAccessFile(preview, "rw").use { it.seek(0); it.write(0) }
+                    assertEquals("damaged cached preview must be replaced", previewSha, sha(engine.loadPreview(media).readBytes()))
                     assertFalse("preview success cannot hide original failure", engine.snapshot(true, "").healthy)
                     engine.loadOriginal(media) { _, _ -> }
                     assertFalse(engine.snapshot(true, "").remoteFailures.contains(media.id))

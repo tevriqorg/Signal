@@ -29,11 +29,14 @@ internal class SignalHttpError(val status: Int, val response: JSONObject) :
 
 /** Persist the device token encrypted using the Android Keystore, not as plaintext settings. */
 internal class SignalPairingStore(private val context: Context) {
+    companion object { private val identityLock = Any() }
     private val prefs = context.getSharedPreferences("signal-gallery-pairing", Context.MODE_PRIVATE)
     private val alias = "signal-gallery-token-v1"
 
-    fun deviceId(): String = prefs.getString("device_id", null) ?: UUID.randomUUID().toString().also {
-        prefs.edit().putString("device_id", it).apply()
+    fun deviceId(): String = synchronized(identityLock) {
+        prefs.getString("device_id", null) ?: UUID.randomUUID().toString().also {
+            check(prefs.edit().putString("device_id", it).commit()) { "无法保存设备身份" }
+        }
     }
 
     private fun key(): javax.crypto.SecretKey {
@@ -59,15 +62,22 @@ internal class SignalPairingStore(private val context: Context) {
         }.getOrNull()
     }
 
+    fun lastServerUrl(): String? = prefs.getString("last_server_url", null) ?: prefs.getString("server_url", null)
+
     fun save(url: String, token: String) {
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, key())
+        fun encryptionCipher() = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
+        val cipher = try { encryptionCipher() } catch (_: java.security.GeneralSecurityException) {
+            // Explicit credential recovery may follow a permanently invalidated/removed key.
+            // The server already revoked the old token; generate a fresh wrapping key.
+            KeyStore.getInstance("AndroidKeyStore").apply { load(null); deleteEntry(alias) }
+            encryptionCipher()
+        }
         val encrypted = cipher.iv + cipher.doFinal(token.toByteArray(Charsets.UTF_8))
-        prefs.edit().putString("server_url", url.trimEnd('/'))
-            .putString("device_token", Base64.encodeToString(encrypted, Base64.NO_WRAP)).apply()
+        check(prefs.edit().putString("server_url", url.trimEnd('/')).putString("last_server_url", url.trimEnd('/'))
+            .putString("device_token", Base64.encodeToString(encrypted, Base64.NO_WRAP)).commit()) { "无法保存配对凭据" }
     }
 
-    fun clear() { prefs.edit().remove("server_url").remove("device_token").apply() }
+    fun clear() { check(prefs.edit().remove("server_url").remove("device_token").commit()) }
 }
 
 internal class SignalMediaClient(private val context: Context) {
@@ -93,10 +103,26 @@ internal class SignalMediaClient(private val context: Context) {
         val url = checkUrl(rawUrl)
         require(enrollmentKey.length >= 16 && displayName.isNotBlank())
         val payload = JSONObject().put("device_id", deviceId)
-            .put("device_name", displayName.trim().take(80)).put("platform", "android")
+            .put("device_name", displayName.trim().take(80)).put("platform", "android").put("recover_existing", true)
         val result = JSONObject(String(request(url, "POST", "/v1/devices",
             payload.toString().toByteArray(), null, mapOf("X-Enrollment-Key" to enrollmentKey))))
+        val previous = credentials.lastServerUrl()
+        if (previous != url) {
+            // Callers serialize center changes with all sync/download actors. Clear derived
+            // state before publishing credentials, so process death cannot retain old proofs.
+            GallerySyncStore(context).use { it.resetCenter() }
+            for (name in listOf("gallery-originals", "gallery-previews")) {
+                val folder = File(context.filesDir, name)
+                check(!folder.exists() || folder.deleteRecursively()) { "无法清理旧中心缓存" }
+            }
+            check(context.getSharedPreferences("gallery-remote-failures", Context.MODE_PRIVATE).edit().clear().commit())
+        }
         credentials.save(url, result.getString("device_token"))
+    }
+
+    internal fun checkMediaCenter(media: RemotePhoto) {
+        if (media.centerUrl.isNotBlank() && media.centerUrl != address)
+            throw kotlinx.coroutines.CancellationException("媒体所属中心已更改")
     }
 
     fun unpair() = credentials.clear()
@@ -115,7 +141,7 @@ internal class SignalMediaClient(private val context: Context) {
             else "/v1/search?since=$since&limit=200&q=" + java.net.URLEncoder.encode(query, "UTF-8")
         val result = JSONObject(String(request(credential.serverUrl, "GET", path, null, credential.deviceToken)))
         val items = result.getJSONArray("items")
-        return SignalCatalog((0 until items.length()).map { RemotePhoto.parse(items.getJSONObject(it)) },
+        return SignalCatalog((0 until items.length()).map { RemotePhoto.parse(items.getJSONObject(it)).copy(centerUrl = credential.serverUrl) },
             result.getLong("next_cursor"))
     }
 
@@ -204,14 +230,23 @@ internal class SignalMediaClient(private val context: Context) {
         File(File(context.filesDir, "gallery-originals"), mediaId).takeIf { it.isFile && it.length() > 0 }
 
     fun fetchPreview(media: RemotePhoto): File {
+        checkMediaCenter(media)
         preview(media.id)?.let {
             val revision = File(it.parentFile, media.id + ".revision")
-            if (revision.isFile && revision.readText() == media.revision.toString()) return it
+            val digest = File(it.parentFile, media.id + ".sha256")
+            if (revision.isFile && revision.readText() == media.revision.toString() &&
+                digest.isFile && digest.readText() == fileSha(it)) return it
+            it.delete()
+            revision.delete()
+            digest.delete()
         }
         val credential = pair()
         val bytes = request(credential.serverUrl, "GET", "/v1/media/" + media.id + "/thumbnail",
             null, credential.deviceToken)
         require(bytes.size in 1..(3 * 1024 * 1024)) { "缩略图大小无效" }
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        require(bounds.outWidth in 1..4096 && bounds.outHeight in 1..4096) { "缩略图图像无效" }
         val folder = File(context.filesDir, "gallery-previews").apply { mkdirs() }
         reserveCache(folder, bytes.size.toLong(), 128L * 1024 * 1024, media.id)
         val temporary = File.createTempFile("pending", ".jpg", folder)
@@ -219,12 +254,14 @@ internal class SignalMediaClient(private val context: Context) {
             temporary.writeBytes(bytes)
             val final = File(folder, media.id + ".jpg")
             check(temporary.renameTo(final)) { "缓存缩略图失败" }
+            File(folder, media.id + ".sha256").writeText(fileSha(final))
             File(folder, media.id + ".revision").writeText(media.revision.toString())
             return final
         } finally { temporary.delete() }
     }
 
     fun fetchOriginal(media: RemotePhoto, progress: (Long, Long) -> Unit): File {
+        checkMediaCenter(media)
         require(media.originalReady && !media.sha256.isNullOrBlank()) { "云端原件尚未就绪" }
         original(media.id)?.let { cached ->
             if (fileSha(cached) == media.sha256) return cached
@@ -232,9 +269,11 @@ internal class SignalMediaClient(private val context: Context) {
         }
         val credential = pair()
         val folder = File(context.filesDir, "gallery-originals").apply { mkdirs() }
-        reserveCache(folder, media.size ?: 0, 2L * 1024 * 1024 * 1024, media.id)
         // Stable partial path survives process death. SHA binds it to the exact revision.
         val tmp = File(folder, media.id + "." + media.sha256 + ".part")
+        folder.listFiles()?.filter { it.name.startsWith(media.id + ".") && it.name.endsWith(".part") && it.name != tmp.name }
+            ?.forEach { check(it.delete()) { "无法清理旧版本缓存" } }
+        reserveCache(folder, media.size ?: 0, 2L * 1024 * 1024 * 1024, media.id, reusableFileName = tmp.name)
         if (media.size != null && tmp.length() > media.size) tmp.delete()
         var offset = tmp.length()
         if (media.size != null && offset == media.size && fileSha(tmp) == media.sha256) {
@@ -290,20 +329,25 @@ internal class SignalMediaClient(private val context: Context) {
         return freed
     }
 
-    private fun reserveCache(folder: File, required: Long, limit: Long, protectedId: String) {
-        require(required <= limit) { "原件超过当前缓存容量，请先释放空间或使用其他设备取用" }
+    internal fun reserveCache(folder: File, required: Long, limit: Long, protectedId: String,
+        availableBytes: Long? = null, reusableFileName: String? = null) {
         val entries = folder.listFiles()?.filter { it.isFile } ?: emptyList()
         var used = entries.sumOf { it.length() }
-        val existing = entries.filter { it.name.startsWith(protectedId) }.sumOf { it.length() }
+        val protectedBytes = entries.filter { it.name.startsWith(protectedId) }.sumOf { it.length() }
+        val existing = entries.filter { it.name == reusableFileName }.sumOf { it.length() }.coerceAtMost(required)
         val additional = maxOf(0L, required - existing)
+        // Retention budget is soft for an explicitly opened large original. Never discard
+        // resumable partials; actual filesystem free space remains the hard safety gate.
+        val otherPartials = entries.filter { it.name.endsWith(".part") && !it.name.startsWith(protectedId) }.sumOf { it.length() }
+        val budget = maxOf(limit, required + otherPartials + maxOf(0L, protectedBytes - existing))
         for (entry in entries.sortedBy { it.lastModified() }) {
-            if (used + additional <= limit) break
+            if (used + additional <= budget) break
             if (entry.name.startsWith(protectedId) || entry.name.endsWith(".part")) continue
             val size = entry.length()
             if (entry.delete()) used -= size
         }
-        check(used + additional <= limit) { "缓存空间不足，请稍后重试" }
-        check(folder.usableSpace >= additional + 16L * 1024 * 1024) { "设备存储空间不足" }
+        check(used + additional <= budget) { "缓存空间不足，请稍后重试" }
+        check((availableBytes ?: folder.usableSpace) >= additional + 16L * 1024 * 1024) { "设备存储空间不足" }
     }
 
     private fun request(url: String, method: String, path: String, data: ByteArray?, token: String?,

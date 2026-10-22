@@ -170,11 +170,19 @@ class MediaService:
             raise ApiError(400, "unsupported platform")
         token = secrets.token_urlsafe(40)
         with self.lock, self.db() as db:
-            existing = db.execute("SELECT 1 FROM devices WHERE id=?", (device_id,)).fetchone()
+            existing = db.execute("SELECT name FROM devices WHERE id=?", (device_id,)).fetchone()
             if existing:
-                raise ApiError(409, "device already enrolled")
-            db.execute("INSERT INTO devices (id,name,platform,token_hash) VALUES (?,?,?,?)",
-                       (device_id, name, platform, token_hash(token)))
+                if body.get("recover_existing") is not True:
+                    raise ApiError(409, "device already enrolled; explicit credential recovery required")
+                # The enrollment secret is the personal library administrator credential.
+                # Recover the stable device identity; never duplicate its existing assets.
+                db.execute("UPDATE devices SET name=?,platform=?,token_hash=?,revoked=0 WHERE id=?",
+                           (name, platform, token_hash(token), device_id))
+                if existing["name"] != name:
+                    db.execute("INSERT INTO changes(asset_id) SELECT id FROM assets WHERE device_id=?", (device_id,))
+            else:
+                db.execute("INSERT INTO devices (id,name,platform,token_hash) VALUES (?,?,?,?)",
+                           (device_id, name, platform, token_hash(token)))
             db.commit()
         return {"device_id": device_id, "device_token": token}
 

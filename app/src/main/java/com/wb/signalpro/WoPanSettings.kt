@@ -6,7 +6,7 @@ object WoPanSettings {
     private const val PREFS = "signal_wopan_probe"
     private const val KEY_BASE_URL = "base_url"
     private const val KEY_LAST_HOST = "last_host"
-    const val DEFAULT_URL = "https://tovps.tail813e11.ts.net:17640"
+    const val DEFAULT_URL = ""
 
     fun getBaseUrl(context: Context): String =
         prefs(context).getString(KEY_BASE_URL, DEFAULT_URL)?.trim()?.trimEnd('/').orEmpty().ifBlank { DEFAULT_URL }
