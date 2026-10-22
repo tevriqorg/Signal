@@ -94,6 +94,11 @@ class DualEmulatorInstrumentedTest {
                     assertFalse("preview success cannot hide original failure", engine.snapshot(true, "").healthy)
                     engine.loadOriginal(media) { _, _ -> }
                     assertFalse(engine.snapshot(true, "").remoteFailures.contains(media.id))
+                    val generation = engine.snapshot(true, "").cacheGeneration
+                    assertTrue(engine.clearOriginalCache() > 0)
+                    assertNull(verifiedGalleryOriginal(context, media))
+                    assertTrue(engine.snapshot(true, "").cacheGeneration > generation)
+                    assertEquals(media.sha256, sha(engine.loadOriginal(media) { _, _ -> }.readBytes()))
                 }
                 GallerySyncStore(context).use { it.ingest(all(client), client.catalog(0).cursor) }
                 val activity = instrumentation.startActivitySync(Intent(context, GalleryActivity::class.java)

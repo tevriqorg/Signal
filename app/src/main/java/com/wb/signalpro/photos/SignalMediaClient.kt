@@ -279,6 +279,17 @@ internal class SignalMediaClient(private val context: Context) {
         } finally { connection.disconnect() }
     }
 
+    fun clearOriginalCache(): Long {
+        val folder = File(context.filesDir, "gallery-originals")
+        var freed = 0L
+        folder.listFiles()?.forEach { file ->
+            val size = file.length()
+            check(file.delete()) { "缓存正在使用或无法清理，请稍后重试" }
+            freed += size
+        }
+        return freed
+    }
+
     private fun reserveCache(folder: File, required: Long, limit: Long, protectedId: String) {
         require(required <= limit) { "原件超过当前缓存容量，请先释放空间或使用其他设备取用" }
         val entries = folder.listFiles()?.filter { it.isFile } ?: emptyList()

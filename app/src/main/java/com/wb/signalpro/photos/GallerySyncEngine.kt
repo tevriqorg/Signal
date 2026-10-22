@@ -16,6 +16,7 @@ import kotlinx.coroutines.sync.withLock
 internal data class DeviceMediaProgress(val name: String, val ready: Int, val total: Int, val bytes: Long)
 
 internal data class GallerySyncSnapshot(
+    val cacheGeneration: Long = 0,
     val analysisStatus: String = "",
     val devices: List<DeviceMediaProgress> = emptyList(),
     val paired: Boolean = false,
@@ -47,6 +48,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
     val client = SignalMediaClient(app)
     private val store = GallerySyncStore(app)
     private val failurePrefs = app.getSharedPreferences("gallery-remote-failures", Context.MODE_PRIVATE)
+    @Volatile private var cacheGeneration = 0L
     private var analysisStatus = ""
     private var analysisFailures = 0
     private fun refreshAnalysisStatus() {
@@ -84,6 +86,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
             else transfer
         }
         return GallerySyncSnapshot(
+            cacheGeneration = cacheGeneration,
             analysisStatus = analysisStatus,
             devices = store.allCatalog().groupBy { it.deviceId }.values.map { entries ->
                 DeviceMediaProgress(entries.first().deviceName, entries.count { it.originalReady }, entries.size,
@@ -210,9 +213,13 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
 
     suspend fun loadOriginal(media: RemotePhoto, progress: (Long, Long) -> Unit) =
         withContext(Dispatchers.IO) { downloadMutex.withLock {
-            try { client.fetchOriginal(media, progress).also { remoteFailure(media.id, false) } }
+            try { client.fetchOriginal(media, progress).also { remoteFailure(media.id, false); cacheGeneration++ } }
             catch (error: Exception) { remoteFailure(media.id, true); throw error }
         } }
+
+    suspend fun clearOriginalCache() = withContext(Dispatchers.IO) { downloadMutex.withLock {
+        client.clearOriginalCache().also { cacheGeneration++ }
+    } }
 
     suspend fun retryFailures() = withContext(Dispatchers.IO) {
         if (!client.paired) return@withContext

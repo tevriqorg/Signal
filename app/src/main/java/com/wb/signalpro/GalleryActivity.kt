@@ -143,6 +143,11 @@ class GalleryActivity : ComponentActivity() {
                         runCatching { sync.retryFailures() }.onFailure { ui = ui.copy(sync = sync.snapshot(false, "重试失败，请检查连接或存储")) }
                         startSync(ui.items)
                     } },
+                    onClearCache = { scope.launch {
+                        runCatching { sync.clearOriginalCache() }
+                            .onSuccess { ui = ui.copy(sync = sync.snapshot(true, "缓存已清理，手机与云端原件仍保留")) }
+                            .onFailure { ui = ui.copy(sync = sync.snapshot(false, "缓存清理失败，请稍后重试")) }
+                    } },
                     onPair = { url, code, device -> pair(url, code, device) },
                     onSearch = { search(it) },
                     onLoadRemote = { loadOriginal(it) },
@@ -340,6 +345,7 @@ private fun GalleryScreen(
     onRequestAccess: () -> Unit,
     onRefresh: () -> Unit,
     onSync: () -> Unit,
+    onClearCache: () -> Unit,
     onPair: (String, String, String) -> Unit,
     onSearch: (String) -> Unit,
     onLoadRemote: (RemotePhoto) -> Unit,
@@ -530,6 +536,7 @@ private fun GalleryScreen(
                         fontSize = 12.sp, color = Subtle)
                     if (!state.sync.paired)
                         TextButton(onClick = { showSync = false; showPair = true }) { Text("配对 Signal Server") }
+                    TextButton(onClick = onClearCache) { Text("清理原件缓存") }
                     Text("视频原件优先在高速 Wi-Fi 且 App 保持前台时传输。",
                         fontSize = 12.sp, color = Subtle)
                 }
@@ -642,7 +649,7 @@ private fun localBadge(item: MediaItem, transfer: LocalTransfer?): GalleryTransf
 @Composable
 private fun remoteBadge(media: RemotePhoto, sync: GallerySyncSnapshot, failed: Set<String>): GalleryTransferBadge {
     val context = LocalContext.current
-    val original = remember(sync.remote, media.id) {
+    val original = remember(sync.cacheGeneration, media.id, media.sha256) {
         verifiedGalleryOriginal(context, media)
     }
     val state = when {
@@ -656,7 +663,7 @@ private fun remoteBadge(media: RemotePhoto, sync: GallerySyncSnapshot, failed: S
 
 @Composable
 private fun GalleryCell(item: MediaItem, badge: GalleryTransferBadge, onClick: () -> Unit) {
-    val preview = mediaBitmap(item.contentUri, 360)
+    val preview = mediaBitmap(item.contentUri, 360, item.modifiedGeneration)
     GalleryTile(preview, item.displayName ?: "照片", badge,
         item.mediaType == MediaType.VIDEO, onClick)
 }
@@ -668,7 +675,7 @@ private fun RemoteCell(media: RemotePhoto, badge: GalleryTransferBadge,
         value = runCatching { loadPreview(media).absolutePath }
             .onFailure { if (media.thumbReady) onFailed() }.getOrNull()
     }
-    val preview = mediaBitmap(path?.let { "file://" + it }, 360)
+    val preview = mediaBitmap(path?.let { "file://" + it }, 360, media.revision)
     GalleryTile(preview, media.fileName, badge, media.isVideo, onClick)
 }
 
@@ -704,9 +711,9 @@ private fun GalleryTile(image: ImageBitmap?, description: String, badge: Gallery
 }
 
 @Composable
-private fun mediaBitmap(uri: String?, size: Int): ImageBitmap? {
+private fun mediaBitmap(uri: String?, size: Int, cacheKey: Any? = uri): ImageBitmap? {
     val resolver = LocalContext.current.contentResolver
-    val result by produceState<ImageBitmap?>(null, uri) {
+    val result by produceState<ImageBitmap?>(null, uri, cacheKey) {
         value = withContext(Dispatchers.IO) {
             if (uri == null) null
             else runCatching {

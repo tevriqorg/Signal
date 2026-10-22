@@ -41,6 +41,7 @@ class MediaSearchIndex:
             columns = {r[1] for r in db.execute("PRAGMA table_info(media_analysis)")}
             if "context" not in columns:
                 db.execute("ALTER TABLE media_analysis ADD COLUMN context TEXT NOT NULL DEFAULT '{}'")
+                db.execute("DELETE FROM media_analysis")
         self.ready = True
 
     def index_pending(self):
@@ -151,8 +152,9 @@ class MediaSearchIndex:
             hits = [term for term in terms if term in text.casefold()]
             score = 0.0
             if hits:
-                score += 1.0
-                reasons.append({"kind": "ocr_or_metadata", "terms": hits, "excerpt": text[:240]})
+                score += len(hits)
+                position = min(text.casefold().find(term) for term in hits)
+                reasons.append({"kind": "ocr_or_metadata", "terms": hits, "excerpt": text[max(0, position - 60):position + 180]})
             if row["vector"]:
                 vector = json.loads(row["vector"])
                 similarity = sum(a*b for a,b in zip(query_vector, vector))
