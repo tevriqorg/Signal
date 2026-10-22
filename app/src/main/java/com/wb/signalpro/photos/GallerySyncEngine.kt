@@ -106,14 +106,23 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
         withContext(Dispatchers.IO) { transferMutex.withLock {
             if (!beginTransfer()) return@withContext
             try {
+            var lastPublish = 0L
+            fun update(healthy: Boolean, message: String, bytes: Long = 0L, total: Long = 0L,
+                active: String = "", force: Boolean = false) {
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (force || now - lastPublish >= 250) {
+                    lastPublish = now
+                    onUpdate(snapshot(healthy, message, bytes, total, active))
+                }
+            }
             val job = currentCoroutineContext()[Job]
             knownItems = items
             knownVersions = items.associate { it.id.value to it.toString() }
             if (!client.paired) {
-                onUpdate(snapshot(false, "未配对 Signal Server"))
+                update(false, "未配对 Signal Server", force = true)
                 return@withContext
             }
-            onUpdate(snapshot(false, "正在检查云端目录"))
+            update(false, "正在检查云端目录", force = true)
             var failed = false
             try {
                 // Fetch deltas in pages. The cursor and remote entries persist over process death.
@@ -125,9 +134,9 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                     if (result.items.size < 200 || result.cursor == start) break
                 }
                 refreshAnalysisStatus()
-                onUpdate(snapshot(true, "目录已更新"))
+                update(true, "目录已更新", force = true)
             } catch (error: Exception) {
-                onUpdate(snapshot(isTransient(error), "连接暂不可用，将自动重试：" + (error.message ?: "未知错误")))
+                update(isTransient(error), "连接暂不可用，将自动重试：" + (error.message ?: "未知错误"), force = true)
                 return@withContext
             }
 
@@ -148,7 +157,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                         store.saveLocal(media.id.value, mediaId, verified = false)
                         store.saveSourceVersion(media.id.value, version)
                         touched++
-                        onUpdate(snapshot(true, "基础信息已同步，等待原件"))
+                        update(true, "基础信息已同步，等待原件")
 
                     }
                     val confirmedId = mediaId ?: continue
@@ -160,11 +169,11 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                             (foreground || (allowBackgroundImages && media.mediaType != MediaType.VIDEO)) &&
                             (media.mediaType != MediaType.VIDEO || fastWifi()) },
                         progress = { done, total ->
-                            onUpdate(snapshot(true, "正在传输原件", done, total, media.displayName ?: "照片"))
+                            update(true, "正在传输原件", done, total, media.displayName ?: "照片")
                         })
                     if (uploaded && !cancelled && (foreground || (allowBackgroundImages && media.mediaType != MediaType.VIDEO))) {
                         store.saveLocal(media.id.value, confirmedId, verified = true)
-                        onUpdate(snapshot(true, "原件已通过服务端校验"))
+                        update(true, "原件已通过服务端校验")
                     }
                     touched++
                 } catch (error: kotlinx.coroutines.CancellationException) { throw error
@@ -172,7 +181,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                     val terminal = !isTransient(error)
                     failed = failed || terminal
                     if (mediaId != null) store.saveLocal(media.id.value, mediaId, verified = false, failed = terminal)
-                    onUpdate(snapshot(!terminal, if (terminal) "同步异常：" + (error.message ?: "未知原因") else "网络暂不可用，等待重试"))
+                    update(!terminal, if (terminal) "同步异常：" + (error.message ?: "未知原因") else "网络暂不可用，等待重试", force = true)
                 }
             }
             if (!cancelled) {
@@ -186,7 +195,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                 }.onFailure { failed = true }
                 runCatching { refreshAnalysisStatus() }
                 val unresolved = failed || store.localSnapshot().values.any { it.failed } || remoteFailures().isNotEmpty() || analysisFailures > 0
-                onUpdate(snapshot(!unresolved, if (unresolved) "有项目需要重试" else "同步系统正常"))
+                update(!unresolved, if (unresolved) "有项目需要重试" else "同步系统正常", force = true)
             }
             } finally { endTransfer() }
         } }

@@ -46,60 +46,60 @@ class MediaSearchIndex:
 
     def index_pending(self):
         from PIL import Image, ImageOps
-        with self.lock:
-            with self.service.db() as db:
-                rows = db.execute("""SELECT a.* FROM assets a LEFT JOIN media_analysis m ON m.asset_id=a.id
-                    LEFT JOIN media_analysis_errors e ON e.asset_id=a.id AND e.sha=a.original_sha
-                    WHERE a.original_ready=1 AND a.deleted=0 AND (m.sha IS NULL OR m.sha<>a.original_sha)
-                    AND (e.next_retry IS NULL OR e.next_retry<=?) LIMIT 32""", (time.time(),)).fetchall()
-            for row in rows:
-                try:
-                    # Video uses its authenticated representative cover, not fabricated frame understanding.
-                    path = self.service.root / ("thumbs" if row["media_type"] == "video" else "objects") / (row["id"] if row["media_type"] == "video" else row["original_sha"])
-                    if not path.is_file():
-                        continue
-                    with Image.open(path) as source:
-                        context = {}
-                        try:
-                            exif = source.getexif()
-                            context["description"] = str(exif.get(270, ""))[:1000]
-                            gps = exif.get_ifd(34853)
-                            def degrees(values):
-                                return float(values[0]) + float(values[1]) / 60 + float(values[2]) / 3600
-                            if gps.get(2) and gps.get(4):
-                                lat = degrees(gps[2]) * (-1 if gps.get(1) == "S" else 1)
-                                lon = degrees(gps[4]) * (-1 if gps.get(3) == "W" else 1)
-                                if -90 <= lat <= 90 and -180 <= lon <= 180:
-                                    context.update(latitude=lat, longitude=lon)
-                        except (KeyError, TypeError, ValueError, ZeroDivisionError):
-                            pass
-                        image = ImageOps.exif_transpose(source).convert("RGB")
-                        image.thumbnail((1600, 1600))
-                        # Bound subprocess and pixels, and send only local PNG bytes to OCR.
-                        import io
-                        data = io.BytesIO()
-                        image.save(data, format="PNG")
-                        result = subprocess.run(["tesseract", "stdin", "stdout", "-l", os.environ.get("SIGNAL_OCR_LANG", "eng+jpn+chi_sim")],
-                            input=data.getvalue(), capture_output=True, timeout=45, check=True)
-                        ocr = result.stdout.decode("utf-8", errors="replace")[:32000]
+        with self.service.db() as db:
+            rows = db.execute("""SELECT a.* FROM assets a LEFT JOIN media_analysis m ON m.asset_id=a.id
+                LEFT JOIN media_analysis_errors e ON e.asset_id=a.id AND e.sha=a.original_sha
+                WHERE a.original_ready=1 AND a.deleted=0 AND (m.sha IS NULL OR m.sha<>a.original_sha)
+                AND (e.next_retry IS NULL OR e.next_retry<=?) LIMIT 32""", (time.time(),)).fetchall()
+        for row in rows:
+            try:
+                # Video uses its authenticated representative cover, not fabricated frame understanding.
+                path = self.service.root / ("thumbs" if row["media_type"] == "video" else "objects") / (row["id"] if row["media_type"] == "video" else row["original_sha"])
+                if not path.is_file():
+                    continue
+                with Image.open(path) as source:
+                    context = {}
+                    try:
+                        exif = source.getexif()
+                        context["description"] = str(exif.get(270, ""))[:1000]
+                        gps = exif.get_ifd(34853)
+                        def degrees(values):
+                            return float(values[0]) + float(values[1]) / 60 + float(values[2]) / 3600
+                        if gps.get(2) and gps.get(4):
+                            lat = degrees(gps[2]) * (-1 if gps.get(1) == "S" else 1)
+                            lon = degrees(gps[4]) * (-1 if gps.get(3) == "W" else 1)
+                            if -90 <= lat <= 90 and -180 <= lon <= 180:
+                                context.update(latitude=lat, longitude=lon)
+                    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                        pass
+                    image = ImageOps.exif_transpose(source).convert("RGB")
+                    image.thumbnail((1600, 1600))
+                    # Bound subprocess and pixels, and send only local PNG bytes to OCR.
+                    import io
+                    data = io.BytesIO()
+                    image.save(data, format="PNG")
+                    result = subprocess.run(["tesseract", "stdin", "stdout", "-l", os.environ.get("SIGNAL_OCR_LANG", "eng+jpn+chi_sim")],
+                        input=data.getvalue(), capture_output=True, timeout=45, check=True)
+                    ocr = result.stdout.decode("utf-8", errors="replace")[:32000]
+                    with self.lock:
                         vector = self.visual.encode(image, normalize_embeddings=True).tolist()
-                    with self.service.lock, self.service.db() as db:
-                        # Never attach old-source analysis to a newer version.
-                        current = db.execute("SELECT original_sha,deleted FROM assets WHERE id=?", (row["id"],)).fetchone()
-                        if current and current["original_sha"] == row["original_sha"] and not current["deleted"]:
-                            db.execute("INSERT OR REPLACE INTO media_analysis(asset_id,sha,ocr,vector,model,context) VALUES(?,?,?,?,?,?)",
-                                (row["id"], row["original_sha"], ocr, json.dumps(vector), "multilingual-clip-vit-b32", json.dumps(context)))
-                            db.execute("DELETE FROM media_analysis_errors WHERE asset_id=?", (row["id"],))
-                except Exception as error:
-                    # One malformed media must not block every later asset; retain a private bounded error code.
-                    with self.service.db() as db:
-                        previous = db.execute("SELECT attempts FROM media_analysis_errors WHERE asset_id=? AND sha=?",
-                            (row["id"], row["original_sha"])).fetchone()
-                        attempts = (previous[0] if previous else 0) + 1
-                        db.execute("INSERT OR REPLACE INTO media_analysis_errors VALUES(?,?,?,?,?)",
-                            (row["id"], row["original_sha"], attempts,
-                             time.time() + min(3600, 5 * 2 ** min(attempts, 10)), type(error).__name__[:80]))
-            return len(rows)
+                with self.service.lock, self.service.db() as db:
+                    # Never attach old-source analysis to a newer version.
+                    current = db.execute("SELECT original_sha,deleted FROM assets WHERE id=?", (row["id"],)).fetchone()
+                    if current and current["original_sha"] == row["original_sha"] and not current["deleted"]:
+                        db.execute("INSERT OR REPLACE INTO media_analysis(asset_id,sha,ocr,vector,model,context) VALUES(?,?,?,?,?,?)",
+                            (row["id"], row["original_sha"], ocr, json.dumps(vector), "multilingual-clip-vit-b32", json.dumps(context)))
+                        db.execute("DELETE FROM media_analysis_errors WHERE asset_id=?", (row["id"],))
+            except Exception as error:
+                # One malformed media must not block every later asset; retain a private bounded error code.
+                with self.service.db() as db:
+                    previous = db.execute("SELECT attempts FROM media_analysis_errors WHERE asset_id=? AND sha=?",
+                        (row["id"], row["original_sha"])).fetchone()
+                    attempts = (previous[0] if previous else 0) + 1
+                    db.execute("INSERT OR REPLACE INTO media_analysis_errors VALUES(?,?,?,?,?)",
+                        (row["id"], row["original_sha"], attempts,
+                         time.time() + min(3600, 5 * 2 ** min(attempts, 10)), type(error).__name__[:80]))
+        return len(rows)
 
     def status(self):
         with self.service.db() as db:

@@ -154,7 +154,15 @@ class GalleryActivity : ComponentActivity() {
                     onOpenVideo = { openVideo(it) },
                     onRemotePreview = { remote ->
                         try { sync.loadPreview(remote) }
-                        finally { scope.launch { ui = ui.copy(sync = sync.snapshot(true, "缩略图状态已更新")) } }
+                        finally { scope.launch {
+                            val previous = ui.sync
+                            val fresh = sync.snapshot(true, previous.description, previous.transferredBytes, previous.totalBytes, previous.activeTransfer)
+                            ui = ui.copy(sync = fresh.copy(description = when {
+                                fresh.failures > 0 -> "有项目需要重试"
+                                previous.failures > 0 -> "异常已恢复"
+                                else -> previous.description
+                            }))
+                        } }
                     },
                 )
             }
