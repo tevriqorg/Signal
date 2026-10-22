@@ -49,7 +49,7 @@ internal data class RemotePhoto(
         )
     }
 }
-internal data class LocalTransfer(val mediaId: String, val verified: Boolean, val failed: Boolean)
+internal data class LocalTransfer(val mediaId: String, val verified: Boolean, val failed: Boolean, val sourceVersion: String? = null)
 
 internal class GallerySyncStore(context: Context) : SQLiteOpenHelper(context, "signal-gallery-sync.db", null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
@@ -81,8 +81,8 @@ internal class GallerySyncStore(context: Context) : SQLiteOpenHelper(context, "s
         writableDatabase.execSQL("INSERT OR REPLACE INTO source_versions VALUES(?,?)", arrayOf(localId, version))
     }
     fun local(localId: String): LocalTransfer? =
-        readableDatabase.rawQuery("SELECT media_id,verified,failed FROM local_sync WHERE local_id=?", arrayOf(localId)).use {
-            if (!it.moveToFirst()) null else LocalTransfer(it.getString(0), it.getInt(1) == 1, it.getInt(2) == 1)
+        readableDatabase.rawQuery("SELECT l.media_id,l.verified,l.failed,v.version FROM local_sync l LEFT JOIN source_versions v ON v.local_id=l.local_id WHERE l.local_id=?", arrayOf(localId)).use {
+            if (!it.moveToFirst()) null else LocalTransfer(it.getString(0), it.getInt(1) == 1, it.getInt(2) == 1, if (it.isNull(3)) null else it.getString(3))
         }
     fun saveLocal(localId: String, mediaId: String, verified: Boolean, failed: Boolean = false) {
         writableDatabase.execSQL("INSERT OR REPLACE INTO local_sync(local_id,media_id,verified,failed) VALUES(?,?,?,?)",
@@ -118,9 +118,9 @@ internal class GallerySyncStore(context: Context) : SQLiteOpenHelper(context, "s
     fun remote(deviceId: String) = allCatalog().filter { it.deviceId != deviceId }
     fun localSnapshot(): Map<String, LocalTransfer> {
         val result = LinkedHashMap<String, LocalTransfer>()
-        readableDatabase.rawQuery("SELECT local_id,media_id,verified,failed FROM local_sync", null).use { c ->
+        readableDatabase.rawQuery("SELECT l.local_id,l.media_id,l.verified,l.failed,v.version FROM local_sync l LEFT JOIN source_versions v ON v.local_id=l.local_id", null).use { c ->
             while (c.moveToNext()) result[c.getString(0)] =
-                LocalTransfer(c.getString(1), c.getInt(2) == 1, c.getInt(3) == 1)
+                LocalTransfer(c.getString(1), c.getInt(2) == 1, c.getInt(3) == 1, if (c.isNull(4)) null else c.getString(4))
         }
         return result
     }

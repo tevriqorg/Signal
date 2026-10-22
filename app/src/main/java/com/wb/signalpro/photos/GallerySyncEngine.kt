@@ -69,6 +69,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
     @Volatile var foreground = false
     @Volatile var allowBackgroundImages = false
     @Volatile var cancelled = false
+    @Volatile var interruptForRescan = false
 
     internal fun fastWifi(): Boolean {
         val manager = app.getSystemService(ConnectivityManager::class.java)
@@ -115,6 +116,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                     onUpdate(snapshot(healthy, message, bytes, total, active))
                 }
             }
+            interruptForRescan = false
             val job = currentCoroutineContext()[Job]
             knownItems = items
             knownVersions = items.associate { it.id.value to it.toString() }
@@ -122,7 +124,7 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
                 update(false, "未配对 Signal Server", force = true)
                 return@withContext
             }
-            update(false, "正在检查云端目录", force = true)
+            update(true, "正在检查云端目录", force = true)
             var failed = false
             try {
                 // Fetch deltas in pages. The cursor and remote entries persist over process death.
@@ -143,16 +145,17 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
             var touched = 0
             for (media in items) {
                 currentCoroutineContext().ensureActive()
-                if (cancelled || (!foreground && !allowBackgroundImages)) break
+                if (cancelled || interruptForRescan || (!foreground && !allowBackgroundImages)) break
                 val old = store.local(media.id.value)
                 val version = media.toString()
                 if (old?.verified == true && store.sourceVersion(media.id.value) == version && store.thumbnailReady(old.mediaId)) continue
                 if (old?.failed == true) {
                     // Failed items remain visible in red until retry/reconnect; attempt again here.
                 }
+                val sourceChanged = old == null || store.sourceVersion(media.id.value) != version
                 var mediaId = old?.mediaId
                 try {
-                    if (mediaId == null || store.sourceVersion(media.id.value) != version) {
+                    if (mediaId == null || sourceChanged) {
                         mediaId = client.register(media)
                         store.saveLocal(media.id.value, mediaId, verified = false)
                         store.saveSourceVersion(media.id.value, version)
@@ -161,17 +164,17 @@ internal class GallerySyncEngine(context: Context) : AutoCloseable {
 
                     }
                     val confirmedId = mediaId ?: continue
-                    if (!store.thumbnailReady(confirmedId)) client.uploadThumbnail(media, confirmedId)
+                    if (sourceChanged || !store.thumbnailReady(confirmedId)) client.uploadThumbnail(media, confirmedId)
                     val allowed = media.mediaType != MediaType.VIDEO || (foreground && fastWifi())
                     if (!allowed) continue
                     val uploaded = client.uploadOriginal(media, confirmedId,
-                        shouldContinue = { !cancelled && job?.isActive != false &&
+                        shouldContinue = { !cancelled && !interruptForRescan && job?.isActive != false &&
                             (foreground || (allowBackgroundImages && media.mediaType != MediaType.VIDEO)) &&
                             (media.mediaType != MediaType.VIDEO || fastWifi()) },
                         progress = { done, total ->
                             update(true, "正在传输原件", done, total, media.displayName ?: "照片")
                         })
-                    if (uploaded && !cancelled && (foreground || (allowBackgroundImages && media.mediaType != MediaType.VIDEO))) {
+                    if (uploaded && !cancelled && !interruptForRescan && (foreground || (allowBackgroundImages && media.mediaType != MediaType.VIDEO))) {
                         store.saveLocal(media.id.value, confirmedId, verified = true)
                         update(true, "原件已通过服务端校验")
                     }

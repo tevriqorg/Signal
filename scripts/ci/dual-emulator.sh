@@ -133,3 +133,11 @@ for role in A B; do
   done
   phase "$role" background-verify
 done
+
+# Reproduce the original audit defect on a real MediaStore row while offline,
+# then verify a changed original AND cover arrive at the second Android device.
+adb -s emulator-5554 reverse --remove tcp:8765
+phase A edit-offline
+adb -s emulator-5554 reverse tcp:8765 tcp:8765
+phase A recover-edited
+phase B receive-edited

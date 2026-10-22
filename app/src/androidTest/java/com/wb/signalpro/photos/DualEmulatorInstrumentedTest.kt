@@ -72,13 +72,16 @@ class DualEmulatorInstrumentedTest {
                 val id = client.register(item)
                 client.uploadThumbnail(item, id)
                 client.uploadOriginal(item, id, { true }) { _, _ -> }
-                assertTrue(all(client).first { it.id == id }.originalReady)
+                val published = all(client).first { it.id == id }
+                assertTrue(published.originalReady)
+                context.getSharedPreferences("dual-observed", 0).edit().putString("own-sha", published.sha256).commit()
             }
             "receive" -> {
                 val client = client()
                 val peer = if (role == "A") "B" else "A"
                 val media = all(client).first { it.fileName == "dual-$peer.jpg" }
                 assertEquals("Emulator-$peer", media.deviceName)
+                context.getSharedPreferences("dual-observed", 0).edit().putString("peer-sha", media.sha256).commit()
                 val file = client.fetchOriginal(media) { _, _ -> }
                 assertEquals(media.sha256, sha(file.readBytes()))
                 // Same-size cache corruption must be detected and repaired from the authenticated server.
@@ -254,6 +257,53 @@ class DualEmulatorInstrumentedTest {
                     Thread.sleep(1000)
                 }
                 assertTrue("OS worker must upload indexed media after idle and restart", ready)
+            }
+            "edit-offline" -> {
+                val coordinator = MediaIndexCoordinator(context)
+                val old = try { coordinator.reconcile(true); coordinator.indexedMedia().first { it.displayName == "dual-$role.jpg" } } finally { coordinator.close() }
+                GallerySyncStore(context).use { assertTrue(it.local(old.id.value)!!.verified) }
+                context.contentResolver.openOutputStream(android.net.Uri.parse(old.contentUri), "wt")!!.use { output ->
+                    val edited = Bitmap.createBitmap(576, 512, Bitmap.Config.ARGB_8888)
+                    edited.eraseColor(Color.GREEN)
+                    edited.compress(Bitmap.CompressFormat.JPEG, 90, output)
+                    edited.recycle()
+                }
+                val edited = actualMedia(old.contentUri)
+                assertNotEquals(old.modifiedGeneration, edited.modifiedGeneration)
+                GallerySyncEngine(context).use { engine ->
+                    engine.foreground = true
+                    var state = engine.snapshot(true, "")
+                    engine.synchronize(listOf(edited)) { state = it }
+                    assertFalse("offline edit must never retain old verified state", state.local[edited.id.value]!!.verified)
+                    assertTrue(state.pendingUploads > 0)
+                }
+            }
+            "recover-edited" -> {
+                val coordinator = MediaIndexCoordinator(context)
+                val item = try { coordinator.reconcile(true); coordinator.indexedMedia().first { it.displayName == "dual-$role.jpg" } } finally { coordinator.close() }
+                GallerySyncEngine(context).use { engine ->
+                    engine.foreground = true
+                    engine.synchronize(listOf(item)) { }
+                    val transfer = engine.snapshot(true, "").local[item.id.value]!!
+                    assertTrue(transfer.verified)
+                    assertEquals(item.toString(), transfer.sourceVersion)
+                }
+                val media = all(client()).first { it.fileName == "dual-$role.jpg" }
+                assertTrue(media.originalReady && media.thumbReady)
+                assertNotEquals(context.getSharedPreferences("dual-observed", 0).getString("own-sha", null), media.sha256)
+            }
+            "receive-edited" -> {
+                val client = client()
+                val media = all(client).first { it.fileName == "dual-A.jpg" }
+                assertNotEquals(context.getSharedPreferences("dual-observed", 0).getString("peer-sha", null), media.sha256)
+                val file = client.fetchOriginal(media) { _, _ -> }
+                assertEquals(media.sha256, sha(file.readBytes()))
+                val bitmap = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
+                assertEquals(576, bitmap.width)
+                val color = bitmap.getPixel(200, 200)
+                assertTrue(Color.green(color) > Color.red(color))
+                bitmap.recycle()
+                assertTrue(client.fetchPreview(media).isFile)
             }
             "permission-full", "permission-partial", "permission-denied" -> {
                 val expected = when (phase) {

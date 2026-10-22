@@ -230,15 +230,19 @@ class GalleryActivity : ComponentActivity() {
                 Triple(report.accessLevel, items, report.indexedRows)
             }.onSuccess { (access, items, count) ->
                 ui = ui.copy(access = access, items = items, indexed = count, scanning = false)
-                startSync(items)
+                startSync(items, sourceChanged = true)
             }.onFailure {
                 ui = ui.copy(scanning = false, indexError = it.message)
             }
         }
     }
 
-    private fun startSync(items: List<MediaItem>) {
-        if (ui.syncRunning) { syncRequested = true; return }
+    private fun startSync(items: List<MediaItem>, sourceChanged: Boolean = false) {
+        if (ui.syncRunning) {
+            syncRequested = true
+            if (sourceChanged) sync.interruptForRescan = true
+            return
+        }
         scope.launch {
             ui = ui.copy(syncRunning = true)
             try {
@@ -646,6 +650,7 @@ private fun GalleryScreen(
 
 private fun localBadge(item: MediaItem, transfer: LocalTransfer?): GalleryTransferBadge {
     val state = when {
+        transfer != null && transfer.sourceVersion != item.toString() -> GalleryTransferState.METADATA_ONLY
         transfer?.verified == true -> GalleryTransferState.ORIGINAL_VERIFIED
         transfer?.failed == true -> GalleryTransferState.UPLOAD_FAILED
         transfer == null -> GalleryTransferState.NOT_REGISTERED
