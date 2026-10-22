@@ -18,11 +18,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install binary runtime and actual OCR
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y tesseract-ocr tesseract-ocr-jpn tesseract-ocr-chi-sim fonts-dejavu-core
-          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-          pip install -r server/requirements-ai.txt
+        run: bash scripts/ci/install-ai-runtime.sh
       - name: Real model inference on generated fixtures
         env:
           SIGNAL_TEST_AI: '1'
