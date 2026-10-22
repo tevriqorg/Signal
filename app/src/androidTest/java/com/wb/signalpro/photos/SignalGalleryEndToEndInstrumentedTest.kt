@@ -157,8 +157,11 @@ class SignalGalleryEndToEndInstrumentedTest {
             val start = JSONObject(String(request("POST", "/v1/uploads",
                 JSONObject().put("media_id", id).put("size", sample.second.size)
                     .put("sha256", hash).toString().toByteArray(), token)))
-            request("PUT", "/v1/uploads/" + start.getString("upload_id"),
-                sample.second, token, mapOf("X-Offset" to "0"))
+            if (!start.optBoolean("complete")) {
+                request("PUT", "/v1/uploads/" + start.getString("upload_id"),
+                    sample.second, token, mapOf("X-Offset" to "0"))
+            }
+            assertArrayEquals(sample.second, request("GET", "/v1/media/$id/original", null, token))
             return id
         } finally {
             context.contentResolver.delete(android.net.Uri.parse(sample.first.contentUri), null, null)
