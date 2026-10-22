@@ -152,6 +152,19 @@ class DualEmulatorInstrumentedTest {
                     assertTrue(retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)!!.toLong() > 30000)
                     assertNotNull(retriever.getFrameAtTime(1000000))
                 } finally { retriever.release() }
+                GallerySyncStore(context).use { it.ingest(all(client), client.catalog(0).cursor) }
+                val activity = instrumentation.startActivitySync(Intent(context, GalleryActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                try {
+                    val device = UiDevice.getInstance(instrumentation)
+                    assertTrue(device.wait(Until.hasObject(By.text("视频")), 15000))
+                    device.findObject(By.text("视频")).click()
+                    assertTrue(device.wait(Until.hasObject(By.desc(media.fileName)), 15000))
+                    device.findObject(By.desc(media.fileName)).click()
+                    assertTrue(device.wait(Until.hasObject(By.text("使用系统播放器打开")), 15000))
+                    device.findObject(By.text("使用系统播放器打开")).click()
+                    assertTrue(device.wait(Until.hasObject(By.desc("视频正在播放")), 15000))
+                    device.takeScreenshot(File("/sdcard/Pictures/dual-video-playing.png"))
+                } finally { activity.finish() }
             }
             "migration" -> {
                 val name = "signal-gallery-sync.db"

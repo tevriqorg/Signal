@@ -541,14 +541,14 @@ private fun GalleryScreen(
                 if (media.matchReasons.isBlank()) "完整原件已缓存" else "匹配依据：" + media.matchReasons,
                 onClose = { remoteSelected = null }, isVideo = media.isVideo,
                 onOpenVideo = {
-                    val video = android.widget.VideoView(context)
+                    val video = android.widget.VideoView(context).apply { contentDescription = "视频播放器" }
                     val controls = android.widget.MediaController(context)
                     video.setMediaController(controls)
                     video.setVideoURI(Uri.fromFile(file))
                     val dialog = android.app.AlertDialog.Builder(context).setView(video)
                         .setPositiveButton("关闭") { _, _ -> video.stopPlayback() }.create()
                     dialog.setOnDismissListener { video.stopPlayback() }
-                    video.setOnPreparedListener { video.start() }
+                    video.setOnPreparedListener { video.start(); video.contentDescription = "视频正在播放" }
                     dialog.show()
                 })
         }

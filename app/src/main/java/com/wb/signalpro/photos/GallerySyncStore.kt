@@ -37,7 +37,13 @@ internal data class RemotePhoto(
             originalReady = j.optBoolean("original_ready"),
             revision = j.optLong("revision"),
             deleted = j.optBoolean("deleted"),
-            matchReasons = j.optJSONArray("match_reasons")?.toString() ?: "",
+            matchReasons = j.optJSONArray("match_reasons")?.let { reasons ->
+                (0 until reasons.length()).map { index ->
+                    val reason = reasons.getJSONObject(index)
+                    if (reason.optString("kind") == "visual_similarity") "画面内容相近"
+                    else "文字或元数据：" + reason.optString("excerpt").take(100)
+                }.joinToString("；")
+            } ?: "",
         )
     }
 }

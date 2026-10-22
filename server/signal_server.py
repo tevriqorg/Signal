@@ -17,6 +17,8 @@ import sqlite3
 import tempfile
 import threading
 import uuid
+import time
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
@@ -78,8 +80,20 @@ class MediaService:
             if "revoked" not in device_columns:
                 db.execute("ALTER TABLE devices ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0")
             db.commit()
+        self.rate_windows = OrderedDict()
         self.ai = None
         self.quota_bytes = int(os.environ.get("SIGNAL_STORAGE_QUOTA_BYTES", str(1024 ** 4)))
+
+    def allow_request(self, address):
+        now = time.monotonic()
+        with self.lock:
+            start, count = self.rate_windows.pop(address, (now, 0))
+            if now - start >= 1:
+                start, count = now, 0
+            self.rate_windows[address] = (start, count + 1)
+            while len(self.rate_windows) > 4096:
+                self.rate_windows.popitem(last=False)
+            return count < 120
 
     def rotate_device(self, device):
         token = secrets.token_urlsafe(40)
@@ -394,6 +408,29 @@ def atomic_save(destination: Path, data: bytes):
             os.unlink(tmp)
 
 
+class BoundedHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    def __init__(self, *args, **kwargs):
+        self.slots = threading.BoundedSemaphore(32)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
+
+
 class ApiError(Exception):
     def __init__(self, status: int, message: str, extra=None):
         super().__init__(message)
@@ -405,6 +442,10 @@ def make_handler(service: MediaService):
     class Handler(BaseHTTPRequestHandler):
         server_version = "SignalMedia/0.3"
         protocol_version = "HTTP/1.1"
+
+        def setup(self):
+            super().setup()
+            self.connection.settimeout(20)
 
         def log_message(self, _format, *_args):
             # No tokens, user filenames or raw routes in access logs.
@@ -523,8 +564,11 @@ def make_handler(service: MediaService):
 
         def respond(self):
             try:
+                if not service.allow_request(self.client_address[0]):
+                    raise ApiError(429, "request rate exceeded; retry later")
                 self.route()
             except ApiError as error:
+                self.close_connection = True
                 self.json_reply(error.status, {"error": str(error), **error.extra})
             except (OSError, sqlite3.Error):
                 self.json_reply(500, {"error": "internal storage error"})
@@ -558,7 +602,7 @@ def serve():
                     pass
                 time.sleep(5)
         threading.Thread(target=analyze, daemon=True).start()
-    server = ThreadingHTTPServer((bind, port), make_handler(service))
+    server = BoundedHTTPServer((bind, port), make_handler(service))
     try:
         server.serve_forever()
     finally:

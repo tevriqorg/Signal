@@ -19,6 +19,10 @@ for serial in emulator-5554 emulator-5556; do
     sleep 2
   done
   [[ "$(adb -s "$serial" shell getprop sys.boot_completed | tr -d '\r')" == 1 ]]
+  adb -s "$serial" shell settings put global stay_on_while_plugged_in 7
+  adb -s "$serial" shell settings put system screen_off_timeout 1800000
+  adb -s "$serial" shell input keyevent KEYCODE_WAKEUP
+  adb -s "$serial" shell wm dismiss-keyguard
   adb -s "$serial" shell input keyevent 82
   adb -s "$serial" install -r app/build/outputs/apk/debug/app-debug.apk
   adb -s "$serial" install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
@@ -32,7 +36,12 @@ adb devices -l > dual-evidence/devices.txt
 phase() {
   local role="$1" task="$2" serial=emulator-5554
   [[ "$role" == B ]] && serial=emulator-5556
+  adb -s "$serial" shell input keyevent KEYCODE_WAKEUP
+  adb -s "$serial" shell wm dismiss-keyguard
   adb -s "$serial" shell am instrument -w -r -e class com.wb.signalpro.photos.DualEmulatorInstrumentedTest -e role "$role" -e phase "$task" com.wb.signalpro.test/androidx.test.runner.AndroidJUnitRunner | tee "dual-evidence/$role-$task.txt"
+  adb -s "$serial" logcat -d > "dual-evidence/$role-$task-logcat.txt"
+  adb -s "$serial" shell screencap -p /sdcard/dual-phase.png
+  adb -s "$serial" pull /sdcard/dual-phase.png "dual-evidence/$role-$task.png"
   grep -q 'OK (1 test)' "dual-evidence/$role-$task.txt"
   ! grep -qE 'FAILURES|INSTRUMENTATION_FAILED|Process crashed' "dual-evidence/$role-$task.txt"
 }
