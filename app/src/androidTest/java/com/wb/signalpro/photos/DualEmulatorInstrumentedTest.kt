@@ -45,6 +45,10 @@ class DualEmulatorInstrumentedTest {
         }
         return result.values.toList()
     }
+    private suspend fun actualMedia(uri: String): MediaItem = MediaIndexCoordinator(context).use { coordinator ->
+        coordinator.reconcile(forceFull = true)
+        coordinator.indexedMedia().first { it.contentUri == uri }
+    }
     @Test fun phase(): Unit = runBlocking {
         val phase = args.getString("phase") ?: error("phase required")
         when (phase) {
@@ -61,8 +65,7 @@ class DualEmulatorInstrumentedTest {
                     assertTrue(image.compress(Bitmap.CompressFormat.JPEG, 90, out))
                     image.recycle()
                 }
-                val item = MediaItem(MediaId("dual-$role"), 1, uri.toString(), MediaType.PHOTO,
-                    1790000000000, 1790000000000, 1, "image/jpeg", 512, 512, null, "Pictures/SignalDual/", "dual-$role.jpg")
+                val item = actualMedia(uri.toString())
                 val client = client()
                 val id = client.register(item)
                 client.uploadThumbnail(item, id)
@@ -102,8 +105,7 @@ class DualEmulatorInstrumentedTest {
                 }
                 val uri = context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)!!
                 context.contentResolver.openOutputStream(uri)!!.use { output -> input.inputStream().use { it.copyTo(output) } }
-                val item = MediaItem(MediaId("dual-video-$role"), 2, uri.toString(), MediaType.VIDEO,
-                    1790000000000, 1790000000000, 1, "video/mp4", 640, 360, 36000, "Movies/SignalDual/", "dual-large-$role.mp4")
+                val item = actualMedia(uri.toString())
                 val client = client()
                 val id = client.register(item)
                 client.uploadThumbnail(item, id)
@@ -114,8 +116,7 @@ class DualEmulatorInstrumentedTest {
             }
             "resume-video", "interrupt-upload" -> {
                 val uri = context.getSharedPreferences("dual-video", 0).getString("uri", null)!!
-                val item = MediaItem(MediaId("dual-video-$role"), 2, uri, MediaType.VIDEO,
-                    1790000000000, 1790000000000, 1, "video/mp4", 640, 360, 36000, "Movies/SignalDual/", "dual-large-$role.mp4")
+                val item = actualMedia(uri)
                 val client = client()
                 val id = all(client).first { it.fileName == "dual-large-$role.mp4" }.id
                 var initial = -1L
