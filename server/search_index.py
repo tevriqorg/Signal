@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+import math
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -37,6 +38,9 @@ class MediaSearchIndex:
             db.execute("""CREATE TABLE IF NOT EXISTS media_analysis_errors(
                 asset_id TEXT PRIMARY KEY, sha TEXT NOT NULL, attempts INTEGER NOT NULL,
                 next_retry REAL NOT NULL, error_code TEXT NOT NULL)""")
+            columns = {r[1] for r in db.execute("PRAGMA table_info(media_analysis)")}
+            if "context" not in columns:
+                db.execute("ALTER TABLE media_analysis ADD COLUMN context TEXT NOT NULL DEFAULT '{}'")
         self.ready = True
 
     def index_pending(self):
@@ -54,6 +58,20 @@ class MediaSearchIndex:
                     if not path.is_file():
                         continue
                     with Image.open(path) as source:
+                        context = {}
+                        try:
+                            exif = source.getexif()
+                            context["description"] = str(exif.get(270, ""))[:1000]
+                            gps = exif.get_ifd(34853)
+                            def degrees(values):
+                                return float(values[0]) + float(values[1]) / 60 + float(values[2]) / 3600
+                            if gps.get(2) and gps.get(4):
+                                lat = degrees(gps[2]) * (-1 if gps.get(1) == "S" else 1)
+                                lon = degrees(gps[4]) * (-1 if gps.get(3) == "W" else 1)
+                                if -90 <= lat <= 90 and -180 <= lon <= 180:
+                                    context.update(latitude=lat, longitude=lon)
+                        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                            pass
                         image = ImageOps.exif_transpose(source).convert("RGB")
                         image.thumbnail((1600, 1600))
                         # Bound subprocess and pixels, and send only local PNG bytes to OCR.
@@ -68,8 +86,8 @@ class MediaSearchIndex:
                         # Never attach old-source analysis to a newer version.
                         current = db.execute("SELECT original_sha,deleted FROM assets WHERE id=?", (row["id"],)).fetchone()
                         if current and current["original_sha"] == row["original_sha"] and not current["deleted"]:
-                            db.execute("INSERT OR REPLACE INTO media_analysis VALUES(?,?,?,?,?)",
-                                (row["id"], row["original_sha"], ocr, json.dumps(vector), "multilingual-clip-vit-b32"))
+                            db.execute("INSERT OR REPLACE INTO media_analysis(asset_id,sha,ocr,vector,model,context) VALUES(?,?,?,?,?,?)",
+                                (row["id"], row["original_sha"], ocr, json.dumps(vector), "multilingual-clip-vit-b32", json.dumps(context)))
                             db.execute("DELETE FROM media_analysis_errors WHERE asset_id=?", (row["id"],))
                 except Exception as error:
                     # One malformed media must not block every later asset; retain a private bounded error code.
@@ -95,7 +113,7 @@ class MediaSearchIndex:
             query_vector = self.text.encode(query, normalize_embeddings=True).tolist()
         terms = [t.casefold() for t in re.findall(r"[\w]+", query) if len(t) > 1]
         with self.service.db() as db:
-            rows = db.execute("""SELECT a.*, d.name AS device_name, m.ocr, m.vector,
+            rows = db.execute("""SELECT a.*, d.name AS device_name, m.ocr, m.vector, m.context AS media_context,
                 COALESCE((SELECT MAX(seq) FROM changes WHERE asset_id=a.id),0) AS seq
                 FROM assets a JOIN devices d ON a.device_id=d.id
                 LEFT JOIN media_analysis m ON m.asset_id=a.id AND m.sha=a.original_sha
@@ -108,16 +126,28 @@ class MediaSearchIndex:
             try: date = datetime.strptime(iso.group(1), "%Y-%m-%d").date()
             except ValueError: pass
         matches = []
+        coordinate_match = re.search(r"(-?\d{1,2}\.\d+)\s*[,，]\s*(-?\d{1,3}\.\d+)", query)
+        coordinate = tuple(map(float, coordinate_match.groups())) if coordinate_match else None
         filename_query = bool(re.search(r"\.(?:jpg|jpeg|png|webp|heic|mp4|mov)$", query, re.I))
         for row in rows:
             if filename_query and query.casefold() not in (row["filename"] or "").casefold():
                 continue
             reasons = []
+            context = json.loads(row["media_context"] or "{}")
+            if coordinate:
+                if "latitude" not in context or "longitude" not in context:
+                    continue
+                lat1, lon1, lat2, lon2 = map(math.radians, (*coordinate, context["latitude"], context["longitude"]))
+                value = math.sin((lat2-lat1)/2)**2 + math.cos(lat1)*math.cos(lat2)*math.sin((lon2-lon1)/2)**2
+                distance = 6371000 * 2 * math.asin(min(1, math.sqrt(value)))
+                if distance > 5000:
+                    continue
+                reasons.append({"kind": "location", "distance_m": round(distance), "basis": "original_exif_gps"})
             if date:
                 if row["captured_at"] is None or datetime.fromtimestamp(row["captured_at"] / 1000, zone).date() != date:
                     continue
                 reasons.append({"kind": "time", "date": str(date), "timezone": str(zone)})
-            text = " ".join(str(row[k] or "") for k in ("filename", "search_text", "device_name", "ocr"))
+            text = " ".join(str(row[k] or "") for k in ("filename", "search_text", "device_name", "ocr")) + " " + context.get("description", "")
             hits = [term for term in terms if term in text.casefold()]
             score = 0.0
             if hits:

@@ -56,6 +56,23 @@ class RealSearchTest(unittest.TestCase):
             self.assertEqual(0, service.ai.index_pending(), "bounded retry backoff")
             self.assertEqual(3, service.ai.status()["indexed"])
             self.assertTrue(service.ai.search("TOKYO", 0, 10)["items"])
+            from PIL.TiffImagePlugin import IFDRational
+            image = Image.new("RGB", (640, 480), "green")
+            exif = Image.Exif()
+            exif[270] = "Synthetic Park"
+            exif[34853] = {1: "N", 2: (IFDRational(35), IFDRational(0), IFDRational(0)),
+                           3: "E", 4: (IFDRational(139), IFDRational(0), IFDRational(0))}
+            output = io.BytesIO()
+            image.save(output, "JPEG", exif=exif)
+            data = output.getvalue()
+            geo = service.upsert_asset(device, {"local_id": "geo", "media_type": "photo", "mime_type": "image/jpeg", "filename": "geo.jpg", "captured_at": 1792580400000})
+            session = service.start_upload(device, {"media_id": geo["media_id"], "size": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+            service.write_chunk(device, session["upload_id"], 0, data)
+            service.ai.index_pending()
+            results = service.ai.search("35.000,139.000附近", 0, 10)["items"]
+            self.assertEqual([geo["media_id"]], [item["media_id"] for item in results])
+            self.assertTrue(any(reason["kind"] == "location" for reason in results[0]["match_reasons"]))
+            self.assertEqual(geo["media_id"], service.ai.search("Synthetic Park", 0, 10)["items"][0]["media_id"])
 
 
 
