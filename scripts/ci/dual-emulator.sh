@@ -179,9 +179,7 @@ interrupt_transfer() {
   wait "$process" || true
   network_on "$serial"
 }
-command -v ffmpeg >/dev/null || { sudo apt-get update -qq; sudo apt-get install -y ffmpeg; }
-timeout 180s ffmpeg -nostdin -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=640x360:rate=24' -t 36 -c:v libx264 -preset veryfast -profile:v high -level:v 4.1 -b:v 32M -minrate 32M -maxrate 32M -bufsize 32M -x264-params nal-hrd=cbr -pix_fmt yuv420p "$RUNNER_TEMP/signal-large.mp4"
-stat -c '%s' "$RUNNER_TEMP/signal-large.mp4" > dual-evidence/video-size.txt
+[[ -s "$RUNNER_TEMP/signal-large.mp4" ]] || { echo 'FAIL: prebuilt video fixture missing'; exit 1; }
 echo '[acceptance] generated valid large video; copy fixture to emulator A'
 adb -s emulator-5554 push "$RUNNER_TEMP/signal-large.mp4" /sdcard/Download/signal-large.mp4
 phase A publish-video
@@ -189,6 +187,8 @@ interrupt_transfer A interrupt-upload
 phase A resume-video
 interrupt_transfer B interrupt-download
 phase B receive-video
+adb -s emulator-5556 pull /sdcard/Android/data/com.wb.signalpro/files/dual-video-playing.png dual-evidence/video-playing-B.png
+adb -s emulator-5556 pull /sdcard/Android/data/com.wb.signalpro/files/dual-video-playing.xml dual-evidence/video-playing-B.xml
 phase A publish
 phase B receive
 phase B publish

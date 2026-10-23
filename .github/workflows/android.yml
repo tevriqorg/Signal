@@ -175,6 +175,9 @@ jobs:
       - name: Prepare emulator SDK with bounded retries
         timeout-minutes: 26
         run: bash scripts/ci/prepare-emulator-sdk.sh
+      - name: Prepare valid large video before emulator boot
+        timeout-minutes: 12
+        run: bash scripts/ci/prepare-video-fixture.sh
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules

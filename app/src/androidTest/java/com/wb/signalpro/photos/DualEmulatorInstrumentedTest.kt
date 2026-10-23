@@ -304,7 +304,8 @@ class DualEmulatorInstrumentedTest {
                     assertTrue(device.wait(Until.hasObject(By.text("使用系统播放器打开")), 15000))
                     device.findObject(By.text("使用系统播放器打开")).click()
                     assertTrue(device.wait(Until.hasObject(By.desc("视频正在播放")), 15000))
-                    device.takeScreenshot(File(context.getExternalFilesDir(null), "dual-video-playing.png"))
+                    assertTrue(device.takeScreenshot(File(context.getExternalFilesDir(null), "dual-video-playing.png")))
+                    device.dumpWindowHierarchy(File(context.getExternalFilesDir(null), "dual-video-playing.xml"))
                 } finally { activity.finish() }
             }
             "background-seed" -> {
