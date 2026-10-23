@@ -1,0 +1,33 @@
+name: Real OCR and multilingual visual search
+on:
+  push:
+    branches: ['feature/**', 'fix/**', main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  real-ai:
+    strategy:
+      matrix:
+        int8: ['0', '1']
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install binary runtime and actual OCR
+        run: bash scripts/ci/install-ai-runtime.sh
+      - name: Real model inference on generated fixtures
+        env:
+          SIGNAL_TEST_AI: '1'
+          SIGNAL_AI_INT8: ${{ matrix.int8 }}
+        run: |
+          set -o pipefail
+          python3 -m unittest discover -s server -p test_search_index.py -v 2>&1 | tee search-evidence.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: actual-ocr-visual-search-${{ github.sha }}-int8-${{ matrix.int8 }}
+          path: search-evidence.txt

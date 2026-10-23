@@ -1,0 +1,1 @@
+B interrupt-download bytes=1122304: disconnect actual network then force-stop real APK

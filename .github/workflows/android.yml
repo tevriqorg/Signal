@@ -1,0 +1,214 @@
+name: Android APK
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+      - 'fix/**'
+  workflow_dispatch:
+    inputs:
+      isolated_target:
+        description: '使用已配置的隔离 HTTPS 中心进行真实双模拟器验收'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Android 36 platform
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          "$SDKMANAGER" 'platforms;android-36'
+
+      - name: Set up Gradle 9.6
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          gradle-version: '9.6.0'
+
+      - name: Build unsigned release APK
+        run: |
+          set -o pipefail
+          gradle :app:assembleRelease --stacktrace 2>&1 | tee gradle-build.log
+
+      - name: Upload release build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g1-build-log-${{ github.sha }}
+          path: gradle-build.log
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Upload unsigned APK for private signing
+        uses: actions/upload-artifact@v4
+        with:
+          name: Signal-unsigned-${{ github.sha }}
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error
+          retention-days: 90
+
+  media-poc:
+    name: Android 35 MediaStore POC
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle 9.6
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          gradle-version: '9.6.0'
+
+      - name: Install Android 36 platform before emulator build
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"'
+
+      - name: Build single-emulator APKs before boot
+        run: |
+          set -o pipefail
+          timeout 12m gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace 2>&1 | tee single-build.log
+
+      - name: Prepare emulator SDK with bounded retries
+        timeout-minutes: 26
+        run: bash scripts/ci/prepare-emulator-sdk.sh
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run MediaStore + reconcile policy instrumentation
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2, reviewed SDK/boot behavior
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          script: bash scripts/ci/single-emulator.sh
+
+      - name: Upload MediaStore POC evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g1-media-poc-evidence-${{ github.sha }}
+          path: |
+            single-build.log
+            gradle-instrumentation.log
+            signal-server.log
+            gallery-screenshot.png
+            gallery-window.xml
+            gallery-logcat.txt
+            app/build/outputs/androidTest-results/connected/**
+            app/build/reports/androidTests/connected/**
+          if-no-files-found: warn
+          retention-days: 90
+
+  dual-emulator:
+    name: Two Android emulators A-B-A
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    env:
+      SIGNAL_ISOLATED_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.isolated_target }}
+      SIGNAL_TEST_ENDPOINT: ${{ github.event_name == 'workflow_dispatch' && inputs.isolated_target && secrets.SIGNAL_ISOLATED_ENDPOINT || '' }}
+      SIGNAL_TEST_ENROLLMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.isolated_target && secrets.SIGNAL_ISOLATED_ENROLLMENT || '' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v5
+        with:
+          gradle-version: '9.6.0'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Mask isolated endpoint hostname in runner logs
+        if: ${{ inputs.isolated_target }}
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          from urllib.parse import urlsplit
+          url = urlsplit(os.environ['SIGNAL_TEST_ENDPOINT'])
+          assert url.scheme == 'https' and url.hostname and not url.username and not url.password
+          print('::add-mask::' + url.hostname)
+          PYTHON
+      - name: Verify isolated HTTPS health before build and boot
+        if: ${{ inputs.isolated_target }}
+        run: python3 scripts/ci/gallery-health-check.py --attempts 3
+      - name: Install Android 36 platform before emulator build
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"'
+      - name: Build dual-emulator APKs before boot
+        run: |
+          mkdir -p dual-evidence
+          set -o pipefail
+          timeout 12m gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace 2>&1 | tee dual-evidence/build.log
+      - name: Preserve installable test APKs for separate physical-device acceptance
+        run: sha256sum app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk > dual-evidence/apk-sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-test-apks-${{ github.sha }}
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            dual-evidence/apk-sha256.txt
+          retention-days: 90
+      - name: Install actual server-side OCR and CPU vision runtime
+        if: ${{ !inputs.isolated_target }}
+        run: bash scripts/ci/install-ai-runtime.sh
+      - name: Prepare emulator SDK with bounded retries
+        timeout-minutes: 26
+        run: bash scripts/ci/prepare-emulator-sdk.sh
+      - name: Prepare valid large video before emulator boot
+        timeout-minutes: 12
+        run: bash scripts/ci/prepare-video-fixture.sh
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Actual dual emulator acceptance
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2, reviewed SDK/boot behavior
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -memory 1536
+          script: bash scripts/ci/dual-emulator.sh
+      - name: Redact private endpoint from raw emulator evidence
+        if: always()
+        run: python3 scripts/ci/redact-target-evidence.py dual-evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dual-emulator-${{ github.sha }}
+          path: dual-evidence/
+          retention-days: 90

@@ -1,0 +1,1 @@
+A interrupt-upload bytes=1310720: disconnect actual network then force-stop real APK
