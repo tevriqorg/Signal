@@ -1,0 +1,72 @@
+<?xml version='1.0' encoding='UTF-8' ?>
+<testsuites tests="29" failures="0" errors="0" skipped="0" time="0.000" timestamp="2026-10-23T00:28:31" hostname="localhost">
+  <testsuite name="com.wb.signalpro.photos.CandidateGroupingInstrumentedTest" tests="5" failures="0" errors="0" skipped="0" time="0.002" timestamp="2026-10-23T00:28:31" hostname="localhost">
+    <properties>
+      <property name="device" value="emulator-5554" />
+    </properties>
+    <testcase name="sameInputAlwaysProducesSameGroupsWithoutReordering" classname="com.wb.signalpro.photos.CandidateGroupingInstrumentedTest" time="0.002" />
+    <testcase name="hardTimeGapSplits" classname="com.wb.signalpro.photos.CandidateGroupingInstrumentedTest" time="0.000" />
+    <testcase name="shortScreenshotRunStaysTogether" classname="com.wb.signalpro.photos.CandidateGroupingInstrumentedTest" time="0.000" />
+    <testcase name="bucketChangeRequiresTemporalSupport" classname="com.wb.signalpro.photos.CandidateGroupingInstrumentedTest" time="0.000" />
+    <testcase name="meaningfulScreenshotCameraTransitionSplits" classname="com.wb.signalpro.photos.CandidateGroupingInstrumentedTest" time="0.000" />
+  </testsuite>
+  <testsuite name="com.wb.signalpro.photos.GalleryRecoveryInstrumentedTest" tests="6" failures="0" errors="0" skipped="0" time="5.222" timestamp="2026-10-23T00:28:31" hostname="localhost">
+    <properties>
+      <property name="device" value="emulator-5554" />
+    </properties>
+    <testcase name="videoNotificationIsPermissionAwareAndThrottled" classname="com.wb.signalpro.photos.GalleryRecoveryInstrumentedTest" time="0.094" />
+    <testcase name="fullLocalIndexHasNoTwoThousandItemTruncation" classname="com.wb.signalpro.photos.GalleryRecoveryInstrumentedTest" time="2.543" />
+    <testcase name="concurrentForegroundAndCatchupShareOneVerifiedTransfer" classname="com.wb.signalpro.photos.GalleryRecoveryInstrumentedTest" time="2.383" />
+    <testcase name="staleCatalogReplayCannotRollbackRevisionOrCursor" classname="com.wb.signalpro.photos.GalleryRecoveryInstrumentedTest" time="0.022" />
+    <testcase name="explicitLargeOriginalUsesSoftBudgetButPreservesDiskSafetyAndPartials" classname="com.wb.signalpro.photos.GalleryRecoveryInstrumentedTest" time="0.004" />
+    <testcase name="originalDisplayIsBoundedAndOrientationCorrectWithoutChangingStoredBytes" classname="com.wb.signalpro.photos.GalleryRecoveryInstrumentedTest" time="0.176" />
+  </testsuite>
+  <testsuite name="com.wb.signalpro.photos.GallerySystemHealthInstrumentedTest" tests="2" failures="0" errors="0" skipped="0" time="1.159" timestamp="2026-10-23T00:28:31" hostname="localhost">
+    <properties>
+      <property name="device" value="emulator-5554" />
+    </properties>
+    <testcase name="authenticationFaultSurvivesCachedPreviewCacheClearAndProcessReopen" classname="com.wb.signalpro.photos.GallerySystemHealthInstrumentedTest" time="1.123" />
+    <testcase name="globalAnalysisDegradationIsVisibleEvenWithoutPerAssetErrors" classname="com.wb.signalpro.photos.GallerySystemHealthInstrumentedTest" time="0.036" />
+  </testsuite>
+  <testsuite name="com.wb.signalpro.photos.GalleryTransferBadgeInstrumentedTest" tests="3" failures="0" errors="0" skipped="0" time="0.015" timestamp="2026-10-23T00:28:31" hostname="localhost">
+    <properties>
+      <property name="device" value="emulator-5554" />
+    </properties>
+    <testcase name="verifiedLocalHasNoDotButPendingAndInProgressUseAmber" classname="com.wb.signalpro.photos.GalleryTransferBadgeInstrumentedTest" time="0.005" />
+    <testcase name="impossibleSourceStatusCannotBeMistakenAsComplete" classname="com.wb.signalpro.photos.GalleryTransferBadgeInstrumentedTest" time="0.006" />
+    <testcase name="remoteAndSharedKeepSourceRegardlessOfCaching" classname="com.wb.signalpro.photos.GalleryTransferBadgeInstrumentedTest" time="0.004" />
+  </testsuite>
+  <testsuite name="com.wb.signalpro.photos.MediaIndexInstrumentedTest" tests="1" failures="0" errors="0" skipped="0" time="0.925" timestamp="2026-10-23T00:28:31" hostname="localhost">
+    <properties>
+      <property name="device" value="emulator-5554" />
+    </properties>
+    <testcase name="fullSnapshotThenRestartUsesGenerationIncrementalCatchup" classname="com.wb.signalpro.photos.MediaIndexInstrumentedTest" time="0.925" />
+  </testsuite>
+  <testsuite name="com.wb.signalpro.photos.MediaReconcilePolicyInstrumentedTest" tests="8" failures="0" errors="0" skipped="0" time="0.032" timestamp="2026-10-23T00:28:31" hostname="localhost">
+    <properties>
+      <property name="device" value="emulator-5554" />
+    </properties>
+    <testcase name="android14SelectedOnlyIsPartial" classname="com.wb.signalpro.photos.MediaReconcilePolicyInstrumentedTest" time="0.004" />
+    <testcase name="deniedAccessSkips" classname="com.wb.signalpro.photos.MediaReconcilePolicyInstrumentedTest" time="0.000" />
+    <testcase name="firstRunIsFull" classname="com.wb.signalpro.photos.MediaReconcilePolicyInstrumentedTest" time="0.006" />
+    <testcase name="versionChangeForcesFull" classname="com.wb.signalpro.photos.MediaReconcilePolicyInstrumentedTest" time="0.015" />
+    <testcase name="permissionModeChangeForcesFull" classname="com.wb.signalpro.photos.MediaReconcilePolicyInstrumentedTest" time="0.000" />
+    <testcase name="unchangedGenerationSkips" classname="com.wb.signalpro.photos.MediaReconcilePolicyInstrumentedTest" time="0.004" />
+    <testcase name="generationRollbackForcesFull" classname="com.wb.signalpro.photos.MediaReconcilePolicyInstrumentedTest" time="0.002" />
+    <testcase name="higherGenerationIsIncremental" classname="com.wb.signalpro.photos.MediaReconcilePolicyInstrumentedTest" time="0.001" />
+  </testsuite>
+  <testsuite name="com.wb.signalpro.photos.PairingRecoveryInstrumentedTest" tests="2" failures="0" errors="0" skipped="0" time="2.208" timestamp="2026-10-23T00:28:31" hostname="localhost">
+    <properties>
+      <property name="device" value="emulator-5554" />
+    </properties>
+    <testcase name="wrappingKeyCreationCannotRaceWithParallelCredentialReads" classname="com.wb.signalpro.photos.PairingRecoveryInstrumentedTest" time="1.560" />
+    <testcase name="invalidatedKeyCanRecoverStableIdentityAndCenterSwitchCannotReuseOldProofs" classname="com.wb.signalpro.photos.PairingRecoveryInstrumentedTest" time="0.648" />
+  </testsuite>
+  <testsuite name="com.wb.signalpro.photos.SignalGalleryEndToEndInstrumentedTest" tests="2" failures="0" errors="0" skipped="0" time="10.386" timestamp="2026-10-23T00:28:31" hostname="localhost">
+    <properties>
+      <property name="device" value="emulator-5554" />
+    </properties>
+    <testcase name="androidAndSecondSyntheticDeviceCanExchangeVerifiedOriginal" classname="com.wb.signalpro.photos.SignalGalleryEndToEndInstrumentedTest" time="1.040" />
+    <testcase name="nativePhotoWallAndCloudDetailsAreReachableThroughRealUi" classname="com.wb.signalpro.photos.SignalGalleryEndToEndInstrumentedTest" time="9.346" />
+  </testsuite>
+</testsuites>

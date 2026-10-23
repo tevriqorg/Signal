@@ -1,0 +1,9 @@
+{
+  "commit": "308ae2721b0b7fbdb712d00fecb77b5cfd71e6ec",
+  "trees": {
+    "app/src/main": "221a48cc774fe5053f28c00c713582c37bf1c2ff",
+    "app/src/androidTest": "386803c1516559b692bfd392d9e4f9b5bd22b3c8",
+    "server": "0a1e17b90478d3cc5e3341b7a7fee0659fdab0ed",
+    "scripts/ci": "001a23a5ec908758fc7f9e31feed4a2fa285d419"
+  }
+}

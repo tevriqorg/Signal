@@ -1,0 +1,13 @@
+{
+  "health_ai_vision": true,
+  "synthetic_two_device_exchange": true,
+  "original_sha256": "cedcdcf31e9e90e937a4d771743975c49c8e3f1f7ed0eb33665f38ae537b2db1",
+  "real_ocr_query": "GUANGZHOU",
+  "actual_ocr_search": true,
+  "restart_auth_and_original_persisted": true,
+  "backup_restore_hash_verified": true,
+  "current_namespace_backup_verified": true,
+  "production_cutover": false,
+  "private_data_used": false,
+  "loopback_only": true
+}

@@ -169,6 +169,16 @@ jobs:
           mkdir -p dual-evidence
           set -o pipefail
           timeout 12m gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace 2>&1 | tee dual-evidence/build.log
+      - name: Preserve installable test APKs for separate physical-device acceptance
+        run: sha256sum app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk > dual-evidence/apk-sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-test-apks-${{ github.sha }}
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            dual-evidence/apk-sha256.txt
+          retention-days: 90
       - name: Install actual server-side OCR and CPU vision runtime
         if: ${{ !inputs.isolated_target }}
         run: bash scripts/ci/install-ai-runtime.sh
