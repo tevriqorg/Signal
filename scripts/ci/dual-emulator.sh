@@ -28,16 +28,43 @@ else
   python3 server/signal_server.py > dual-evidence/server.log 2>&1 &
   srv=$!
 fi
+# Every task-owned ADB command has a deadline, including boot probes and cleanup.
+# The instrumentation deadline remains the existing phase policy; streaming logcat
+# lives until the job boundary/trap. Neither path converts a failure to a pass.
+adb_binary=$(command -v adb)
+adb() {
+  local args=("$@") action_index=0 deadline=60s
+  [[ "${args[0]:-}" == -s ]] && action_index=2
+  local action="${args[$action_index]:-}"
+  case "$action" in
+    install|push|wait-for-device) deadline=180s ;;
+    logcat)
+      deadline=75m
+      for argument in "${args[@]}"; do [[ "$argument" == -d ]] && deadline=15s; done
+      ;;
+    shell)
+      if [[ "${args[$((action_index + 1))]:-}" == am && "${args[$((action_index + 2))]:-}" == instrument ]]; then
+        deadline="$phase_timeout"
+      elif [[ "${args[$((action_index + 1))]:-}" == getprop ]]; then
+        deadline=15s
+      elif [[ "${args[$((action_index + 1))]:-}" == run-as ]]; then
+        deadline=5s
+      fi
+      ;;
+  esac
+  timeout --kill-after=10s "$deadline" "$adb_binary" "$@"
+}
 printf '{"server_profile":"%s","tls_verification":"platform defaults; no bypass","fixture_run":"%s"}\n' "$profile" "${GITHUB_RUN_ID:-local}" > dual-evidence/profile.json
 trap 'if [[ ${#logcat_pids[@]} -gt 0 ]]; then kill "${logcat_pids[@]}" 2>/dev/null || true; fi; [[ -z "$srv" ]] || kill "$srv" 2>/dev/null || true; adb -s emulator-5556 emu kill >/dev/null 2>&1 || true' EXIT
 echo "[acceptance] server profile: $profile; create second independent AVD"
 # Reuse the installed system image, create a distinct AVD with its own writable userdata.
-avdmanager create avd --force --name signal-peer --package 'system-images;android-35;google_apis;x86_64' --device pixel_6 <<< no
+timeout --kill-after=10s 120s avdmanager create avd --force --name signal-peer --package 'system-images;android-35;google_apis;x86_64' --device pixel_6 <<< no
 "$ANDROID_HOME/emulator/emulator" -avd signal-peer -port 5556 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -memory 1536 > dual-evidence/emulator-B.log 2>&1 &
 for serial in emulator-5554 emulator-5556; do
   echo "[acceptance] wait for $serial boot and install actual APKs"
-  timeout 180s adb -s "$serial" wait-for-device
-  for attempt in $(seq 1 180); do
+  adb -s "$serial" wait-for-device
+  boot_deadline=$((SECONDS + 360))
+  while (( SECONDS < boot_deadline )); do
     [[ "$(adb -s "$serial" shell getprop sys.boot_completed | tr -d '\r')" == 1 ]] && break
     sleep 2
   done
@@ -52,13 +79,14 @@ for serial in emulator-5554 emulator-5556; do
   if adb -s "$serial" shell pm path com.google.android.apps.nexuslauncher | grep -q '^package:'; then
     adb -s "$serial" shell pm disable-user --user 0 com.google.android.apps.nexuslauncher
   fi
+  echo "[acceptance] $serial boot complete; install application APK"
   adb -s "$serial" install -r app/build/outputs/apk/debug/app-debug.apk
   adb -s "$serial" install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
   adb -s "$serial" reverse tcp:8765 tcp:8765
   adb -s "$serial" shell pm grant com.wb.signalpro android.permission.READ_MEDIA_IMAGES
   adb -s "$serial" shell pm grant com.wb.signalpro android.permission.READ_MEDIA_VIDEO
   adb -s "$serial" shell getprop > "dual-evidence/$serial-properties.txt"
-  adb -s "$serial" logcat -v threadtime > "dual-evidence/$serial-live-logcat.txt" 2>&1 &
+  timeout --kill-after=10s 75m "$adb_binary" -s "$serial" logcat -v threadtime > "dual-evidence/$serial-live-logcat.txt" 2>&1 &
   logcat_pids+=("$!")
 done
 adb devices -l > dual-evidence/devices.txt
@@ -103,10 +131,10 @@ phase() {
   adb -s "$serial" shell input keyevent KEYCODE_WAKEUP
   adb -s "$serial" shell wm dismiss-keyguard
   set +e
-  timeout "$phase_timeout" adb -s "$serial" shell am instrument -w -r -e class com.wb.signalpro.photos.DualEmulatorInstrumentedTest -e role "$role" -e phase "$task" -e endpoint "$SIGNAL_TEST_ENDPOINT" -e enrollment "$SIGNAL_TEST_ENROLLMENT" com.wb.signalpro.test/androidx.test.runner.AndroidJUnitRunner | tee "dual-evidence/$evidence_name.txt"
+  timeout --kill-after=10s "$phase_timeout" "$adb_binary" -s "$serial" shell am instrument -w -r -e class com.wb.signalpro.photos.DualEmulatorInstrumentedTest -e role "$role" -e phase "$task" -e endpoint "$SIGNAL_TEST_ENDPOINT" -e enrollment "$SIGNAL_TEST_ENROLLMENT" com.wb.signalpro.test/androidx.test.runner.AndroidJUnitRunner | tee "dual-evidence/$evidence_name.txt"
   local phase_result=${PIPESTATUS[0]}
-  timeout 15s adb -s "$serial" logcat -d > "dual-evidence/$evidence_name-logcat.txt"
-  timeout 15s adb -s "$serial" exec-out screencap -p > "dual-evidence/$evidence_name.png"
+  timeout --kill-after=10s 15s "$adb_binary" -s "$serial" logcat -d > "dual-evidence/$evidence_name-logcat.txt"
+  timeout --kill-after=10s 15s "$adb_binary" -s "$serial" exec-out screencap -p > "dual-evidence/$evidence_name.png"
   free -m > "dual-evidence/$evidence_name-runner-memory.txt"
   set -e
   if [[ "$phase_result" -ne 0 ]]; then echo "FAIL: $evidence_name instrumentation exited $phase_result"; return "$phase_result"; fi
@@ -119,9 +147,16 @@ interrupt_transfer() {
   [[ "$role" == B ]] && serial=emulator-5556
   adb -s "$serial" shell input keyevent KEYCODE_WAKEUP
   adb -s "$serial" shell wm dismiss-keyguard
-  timeout "$phase_timeout" adb -s "$serial" shell am instrument -w -r -e class com.wb.signalpro.photos.DualEmulatorInstrumentedTest -e role "$role" -e phase "$task" -e endpoint "$SIGNAL_TEST_ENDPOINT" -e enrollment "$SIGNAL_TEST_ENROLLMENT" com.wb.signalpro.test/androidx.test.runner.AndroidJUnitRunner > "dual-evidence/$role-$task.txt" 2>&1 &
-  local process=$! progress=0
+  timeout --kill-after=10s "$phase_timeout" "$adb_binary" -s "$serial" shell am instrument -w -r -e class com.wb.signalpro.photos.DualEmulatorInstrumentedTest -e role "$role" -e phase "$task" -e endpoint "$SIGNAL_TEST_ENDPOINT" -e enrollment "$SIGNAL_TEST_ENROLLMENT" com.wb.signalpro.test/androidx.test.runner.AndroidJUnitRunner > "dual-evidence/$role-$task.txt" 2>&1 &
+  local process=$! progress=0 fault_deadline=$((SECONDS + fault_attempts / 2))
   for attempt in $(seq 1 "$fault_attempts"); do
+    (( SECONDS < fault_deadline )) || break
+    if ! kill -0 "$process" 2>/dev/null; then
+      cat "dual-evidence/$role-$task.txt"
+      echo "FAIL: instrumentation ended before confirmed in-flight interruption"
+      wait "$process" || true
+      return 1
+    fi
     progress=$(adb -s "$serial" shell run-as com.wb.signalpro cat "files/dual-$task.progress" 2>/dev/null | tr -d '\r' || true)
     [[ "$progress" =~ ^[0-9]+$ ]] && [[ "$progress" -ge 1048576 ]] && break
     sleep 0.5
@@ -147,6 +182,7 @@ interrupt_transfer() {
 command -v ffmpeg >/dev/null || { sudo apt-get update -qq; sudo apt-get install -y ffmpeg; }
 timeout 180s ffmpeg -nostdin -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=640x360:rate=24' -t 36 -c:v libx264 -preset veryfast -profile:v high -level:v 4.1 -b:v 32M -minrate 32M -maxrate 32M -bufsize 32M -x264-params nal-hrd=cbr -pix_fmt yuv420p "$RUNNER_TEMP/signal-large.mp4"
 stat -c '%s' "$RUNNER_TEMP/signal-large.mp4" > dual-evidence/video-size.txt
+echo '[acceptance] generated valid large video; copy fixture to emulator A'
 adb -s emulator-5554 push "$RUNNER_TEMP/signal-large.mp4" /sdcard/Download/signal-large.mp4
 phase A publish-video
 interrupt_transfer A interrupt-upload
