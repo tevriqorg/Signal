@@ -93,6 +93,9 @@ jobs:
           set -o pipefail
           timeout 12m gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace 2>&1 | tee single-build.log
 
+      - name: Prepare emulator SDK with bounded retries
+        timeout-minutes: 26
+        run: bash scripts/ci/prepare-emulator-sdk.sh
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -100,7 +103,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       - name: Run MediaStore + reconcile policy instrumentation
-        uses: ReactiveCircus/android-emulator-runner@v2
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2, reviewed SDK/boot behavior
         with:
           api-level: 35
           arch: x86_64
@@ -169,13 +172,16 @@ jobs:
       - name: Install actual server-side OCR and CPU vision runtime
         if: ${{ !inputs.isolated_target }}
         run: bash scripts/ci/install-ai-runtime.sh
+      - name: Prepare emulator SDK with bounded retries
+        timeout-minutes: 26
+        run: bash scripts/ci/prepare-emulator-sdk.sh
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
       - name: Actual dual emulator acceptance
-        uses: ReactiveCircus/android-emulator-runner@v2
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2, reviewed SDK/boot behavior
         with:
           api-level: 35
           arch: x86_64
